@@ -42,6 +42,7 @@ public class ImageStreamer : MonoBehaviour
     // Parameters
     [SerializeField] private RawImage m_image;
     [SerializeField] private PassthroughCameraAccess m_cameraAccess;
+    [SerializeField] private Transform centerEyeCamera;
     [SerializeField] private EnvironmentRaycastManager environmentRaycastManager;
     [SerializeField] private GameObject InteractiveCube;
     [SerializeField] private Text debugText;
@@ -66,10 +67,8 @@ public class ImageStreamer : MonoBehaviour
     {
         public string id;
 
-        public float[] corner0;
-        public float[] corner1;
-        public float[] corner2;
-        public float[] corner3;
+        public float[] tvec;
+        public float[] rvec;
     }
 
     private IEnumerator Start()
@@ -101,7 +100,7 @@ public class ImageStreamer : MonoBehaviour
                 float cx = m_cameraAccess.Intrinsics.PrincipalPoint.x;
                 float cy = m_cameraAccess.Intrinsics.PrincipalPoint.y;
 
-                string intrinsicsMessage = $"{fx},{fy},{cx},{cy}";
+                string intrinsicsMessage = $"{fx},{fy},{cx},{cy},{m_cameraAccess.CurrentResolution.x},{m_cameraAccess.CurrentResolution.y}";
                 byte[] messageBytes = Encoding.UTF8.GetBytes(intrinsicsMessage);
 
                 stream.Write(messageBytes, 0, messageBytes.Length);
@@ -220,18 +219,23 @@ public class ImageStreamer : MonoBehaviour
         {
             Debug.Log("Server message received: " + JsonConvert.SerializeObject(dataToProcess));
 
-            // This function modifies a GameObject and MUST run on the main thread (LateUpdate)
-            (Vector3, Quaternion) cubePos = GetCubePosition(dataToProcess);
+            // 1. Convert OpenCV (RHS) to Unity (LHS)
+            Vector3 localPos = new Vector3(dataToProcess.tvec[0], -dataToProcess.tvec[1], dataToProcess.tvec[2]);
 
-            if (cubePos.Item1 != Vector3.zero)
-            {
-                float currentTime = Time.time; // Seconds
+            Vector3 rotAxis = new Vector3(dataToProcess.rvec[0], dataToProcess.rvec[1], dataToProcess.rvec[2]);
+            float angle = rotAxis.magnitude;
+            Vector3 axis = rotAxis.normalized;
+            Quaternion localRot = Quaternion.AngleAxis(-angle * Mathf.Rad2Deg, new Vector3(axis.x, -axis.y, axis.z));
 
-                InteractiveCube.transform.SetPositionAndRotation(
-                    positionFilter.Filter(cubePos.Item1, currentTime),
-                    rotationFilter.Filter(cubePos.Item2, currentTime)
-                );
-            }
+            // 2. Transform relative to Camera
+            Transform camTrans = centerEyeCamera;
+
+            Vector3 worldPos = camTrans.TransformPoint(localPos);
+            Quaternion worldRot = camTrans.rotation * localRot;
+
+            // 3. Filter and Apply
+            InteractiveCube.transform.position = positionFilter.Filter(worldPos, Time.time);
+            InteractiveCube.transform.rotation = rotationFilter.Filter(worldRot, Time.time);
         }
     }
 
@@ -350,65 +354,65 @@ public class ImageStreamer : MonoBehaviour
         }
     }
 
-    private (Vector3, Quaternion) GetCubePosition(CornerData tag)
-    {
-        // Use three corners of tag for computations
-        var viewportPoint0 = new Vector2(tag.corner0[0] / m_cameraAccess.CurrentResolution.x, 1.0f - (tag.corner0[1] / m_cameraAccess.CurrentResolution.y));
-        var viewportPoint1 = new Vector2(tag.corner1[0] / m_cameraAccess.CurrentResolution.x, 1.0f - (tag.corner1[1] / m_cameraAccess.CurrentResolution.y));
-        var viewportPoint3 = new Vector2(tag.corner3[0] / m_cameraAccess.CurrentResolution.x, 1.0f - (tag.corner3[1] / m_cameraAccess.CurrentResolution.y));
+    //private (Vector3, Quaternion) GetCubePosition(CornerData tag)
+    //{
+    //    // Use three corners of tag for computations
+    //    var viewportPoint0 = new Vector2(tag.corner0[0] / m_cameraAccess.CurrentResolution.x, 1.0f - (tag.corner0[1] / m_cameraAccess.CurrentResolution.y));
+    //    var viewportPoint1 = new Vector2(tag.corner1[0] / m_cameraAccess.CurrentResolution.x, 1.0f - (tag.corner1[1] / m_cameraAccess.CurrentResolution.y));
+    //    var viewportPoint3 = new Vector2(tag.corner3[0] / m_cameraAccess.CurrentResolution.x, 1.0f - (tag.corner3[1] / m_cameraAccess.CurrentResolution.y));
 
-        // Cast rays to three corners
-        var ray0 = m_cameraAccess.ViewportPointToRay(viewportPoint0);
-        var ray1 = m_cameraAccess.ViewportPointToRay(viewportPoint1);
-        var ray3 = m_cameraAccess.ViewportPointToRay(viewportPoint3);
+    //    // Cast rays to three corners
+    //    var ray0 = m_cameraAccess.ViewportPointToRay(viewportPoint0);
+    //    var ray1 = m_cameraAccess.ViewportPointToRay(viewportPoint1);
+    //    var ray3 = m_cameraAccess.ViewportPointToRay(viewportPoint3);
 
-        // Instantiate 3D world points to zero
-        var worldPoint0 = Vector3.zero;
-        var worldPoint1 = Vector3.zero;
-        var worldPoint3 = Vector3.zero;
+    //    // Instantiate 3D world points to zero
+    //    var worldPoint0 = Vector3.zero;
+    //    var worldPoint1 = Vector3.zero;
+    //    var worldPoint3 = Vector3.zero;
 
-        // Convert 2D viewport points to 3D world with raycasts
-        if (environmentRaycastManager.Raycast(ray0, out EnvironmentRaycastHit hitInfo0, environmentMask))
-        {
-            worldPoint0 = hitInfo0.point;
-            //// Place a GameObject at the place of intersection
-            //InteractiveCube.transform.SetPositionAndRotation(
-            //    hitInfo.point,
-            //    Quaternion.LookRotation(hitInfo.normal, Vector3.up));
-        }
+    //    // Convert 2D viewport points to 3D world with raycasts
+    //    if (environmentRaycastManager.Raycast(ray0, out EnvironmentRaycastHit hitInfo0, environmentMask))
+    //    {
+    //        worldPoint0 = hitInfo0.point;
+    //        //// Place a GameObject at the place of intersection
+    //        //InteractiveCube.transform.SetPositionAndRotation(
+    //        //    hitInfo.point,
+    //        //    Quaternion.LookRotation(hitInfo.normal, Vector3.up));
+    //    }
 
-        if (environmentRaycastManager.Raycast(ray1, out EnvironmentRaycastHit hitInfo1, environmentMask))
-        {
-            worldPoint1 = hitInfo1.point;
-        }
+    //    if (environmentRaycastManager.Raycast(ray1, out EnvironmentRaycastHit hitInfo1, environmentMask))
+    //    {
+    //        worldPoint1 = hitInfo1.point;
+    //    }
 
-        if (environmentRaycastManager.Raycast(ray3, out EnvironmentRaycastHit hitInfo3, environmentMask))
-        {
-            worldPoint3 = hitInfo3.point;
-        }
+    //    if (environmentRaycastManager.Raycast(ray3, out EnvironmentRaycastHit hitInfo3, environmentMask))
+    //    {
+    //        worldPoint3 = hitInfo3.point;
+    //    }
 
-        // Check if points valid
-        if (worldPoint0 != Vector3.zero && worldPoint1 != Vector3.zero && worldPoint3 != Vector3.zero)
-        {
-            var normal = Vector3.Cross(worldPoint1 - worldPoint0, worldPoint3 - worldPoint0).normalized;
+    //    // Check if points valid
+    //    if (worldPoint0 != Vector3.zero && worldPoint1 != Vector3.zero && worldPoint3 != Vector3.zero)
+    //    {
+    //        var normal = Vector3.Cross(worldPoint1 - worldPoint0, worldPoint3 - worldPoint0).normalized;
 
-            // Offset of tag corner from real cube corner
-            var offset = (worldPoint1 - worldPoint0) / 2.0f + (worldPoint3 - worldPoint0) / 2.0f - (normal * 0.02f);
+    //        // Offset of tag corner from real cube corner
+    //        var offset = (worldPoint1 - worldPoint0) / 2.0f + (worldPoint3 - worldPoint0) / 2.0f - (normal * 0.02f);
 
-            //// Place cube at tag position and rotation
-            //InteractiveCube.transform.SetPositionAndRotation(
-            //    worldPoint0 + offset,
-            //    Quaternion.LookRotation((worldPoint1 - worldPoint0).normalized, normal));
+    //        //// Place cube at tag position and rotation
+    //        //InteractiveCube.transform.SetPositionAndRotation(
+    //        //    worldPoint0 + offset,
+    //        //    Quaternion.LookRotation((worldPoint1 - worldPoint0).normalized, normal));
 
-            Vector3 position = worldPoint0 + offset;
-            //Quaternion rotation = Quaternion.LookRotation((worldPoint1 - worldPoint0).normalized, normal);
-            Quaternion rotation = Quaternion.LookRotation(Vector3.Cross(normal, (worldPoint1 - worldPoint0).normalized), normal);
+    //        Vector3 position = worldPoint0 + offset;
+    //        //Quaternion rotation = Quaternion.LookRotation((worldPoint1 - worldPoint0).normalized, normal);
+    //        Quaternion rotation = Quaternion.LookRotation(Vector3.Cross(normal, (worldPoint1 - worldPoint0).normalized), normal);
 
-            return (position, rotation);
-        }
+    //        return (position, rotation);
+    //    }
 
-        return (Vector3.zero, Quaternion.identity);
-    }
+    //    return (Vector3.zero, Quaternion.identity);
+    //}
 
     // Send debug message
     //public void SendMessageToServer()
