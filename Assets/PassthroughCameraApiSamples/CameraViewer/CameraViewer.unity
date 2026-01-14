@@ -1068,6 +1068,10 @@ PrefabInstance:
       propertyPath: m_AdditionalShaderChannelsFlag
       value: 25
       objectReference: {fileID: 0}
+    - target: {fileID: 8159650142299280644, guid: 0e9e59a9b5566489fad35afecaeac3a9, type: 3}
+      propertyPath: m_IsActive
+      value: 1
+      objectReference: {fileID: 0}
     m_RemovedComponents: []
     m_RemovedGameObjects: []
     m_AddedGameObjects: []
@@ -1113,6 +1117,7 @@ MonoBehaviour:
   serverPort: 65432
   m_image: {fileID: 1094083037}
   m_cameraAccess: {fileID: 1608124433}
+  centerEyeCamera: {fileID: 1494685904}
   environmentRaycastManager: {fileID: 272605734}
   InteractiveCube: {fileID: 613029437}
   debugText: {fileID: 746706242}
