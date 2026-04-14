@@ -248,7 +248,7 @@ public class ImageStreamer : MonoBehaviour
                     int dataLength = dataToDraw.Length;
                     byte[] lengthPrefix = BitConverter.GetBytes(dataLength);
                     byte[] timestampBytes = BitConverter.GetBytes(sendTimestamp);
-                    byte[] posBytes = new byte[12]; // 3 floats * 4 bytes * 2 (pos + some rot)
+                    byte[] posBytes = new byte[12]; // 3 floats * 4 bytes
                     byte[] rotBytes = new byte[16]; // 4 floats for quaternion
 
                     // Pack position
