@@ -86,6 +86,8 @@ public class ImageStreamer : MonoBehaviour
     private byte[] sendFrame = null;
     private readonly object bufferLock = new object();
 
+    private long lastCameraTimestamp = 0;
+
     // Pose history
     public PoseHistory prevPose = new PoseHistory(10);
 
@@ -161,50 +163,62 @@ public class ImageStreamer : MonoBehaviour
             // 2. Initialize the CPU buffer (Texture2D) to match the small size
             if (m_cpuTexture == null || m_cpuTexture.width != targetWidth)
             {
-                m_cpuTexture = new Texture2D(targetWidth, targetHeight, TextureFormat.RGBA32, false);
+                m_cpuTexture = new Texture2D(targetWidth, targetHeight, TextureFormat.R8, false);
             }
 
             // 3. Downscale on the GPU
-            // This takes the 1280x1280 and shrinks it to 640x640 instantly
-            Graphics.Blit(rawTexture, m_smallDescriptor);
-
-            if (!asyncReadbackInProgress)
+            if (m_cameraAccess.Timestamp.Ticks != lastCameraTimestamp)
             {
-                asyncReadbackInProgress = true;
-                AsyncGPUReadback.Request(m_smallDescriptor, 0, TextureFormat.R8, (request) => {
-                    OnCompleteReadback(request, timestamp, capturePose);
-                });
+                lastCameraTimestamp = m_cameraAccess.Timestamp.Ticks;
+
+                Graphics.Blit(rawTexture, m_smallDescriptor);
+
+                // Synchronous readback
+                RenderTexture previous = RenderTexture.active;
+                RenderTexture.active = m_smallDescriptor;
+                m_cpuTexture.ReadPixels(new Rect(0, 0, targetWidth, targetHeight), 0, 0);
+                RenderTexture.active = previous;
+
+                byte[] rawBytes = m_cpuTexture.GetRawTextureData();
+
+                lock (bufferLock)
+                {
+                    sendFrame = rawBytes;
+                    sendTimestamp = timestamp;
+                    sendCameraPose = capturePose;
+                    prevPose.addPose(timestamp, capturePose.position, capturePose.rotation);
+                }
             }
         }
 
         HandleControllerTuning();
     }
 
-    private void OnCompleteReadback(AsyncGPUReadbackRequest request, ulong timestamp, Pose capturePose)
-    {
-        asyncReadbackInProgress = false;
+    //private void OnCompleteReadback(AsyncGPUReadbackRequest request, ulong timestamp, Pose capturePose)
+    //{
+    //    asyncReadbackInProgress = false;
 
-        if (request.hasError)
-        {
-            Debug.LogError("GPU readback error detected.");
-            return;
-        }
+    //    if (request.hasError)
+    //    {
+    //        Debug.LogError("GPU readback error detected.");
+    //        return;
+    //    }
 
-        // Get the data from the GPU
-        var data = request.GetData<byte>();
+    //    // Get the data from the GPU
+    //    var data = request.GetData<byte>();
 
-        //byte[] jpgBytes = ImageConversion.EncodeNativeArrayToJPG(data, m_smallDescriptor.graphicsFormat, (uint)targetWidth, (uint)targetHeight, 0, 60).ToArray();
-        byte[] rawBytes = data.ToArray();
+    //    //byte[] jpgBytes = ImageConversion.EncodeNativeArrayToJPG(data, m_smallDescriptor.graphicsFormat, (uint)targetWidth, (uint)targetHeight, 0, 60).ToArray();
+    //    byte[] rawBytes = data.ToArray();
 
-        lock (bufferLock)
-        {
-            //sendFrame = jpgBytes;
-            sendFrame = rawBytes;
-            sendTimestamp = timestamp;
-            sendCameraPose = capturePose;
-            prevPose.addPose(timestamp, capturePose.position, capturePose.rotation);
-        }
-    }
+    //    lock (bufferLock)
+    //    {
+    //        //sendFrame = jpgBytes;
+    //        sendFrame = rawBytes;
+    //        sendTimestamp = timestamp;
+    //        sendCameraPose = capturePose;
+    //        prevPose.addPose(timestamp, capturePose.position, capturePose.rotation);
+    //    }
+    //}
 
     byte[] GetBigEndianBytes(float value)
     {
