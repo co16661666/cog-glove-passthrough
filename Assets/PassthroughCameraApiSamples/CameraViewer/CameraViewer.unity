@@ -1507,23 +1507,14 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 52b998bbf6b9ff7419ffe08e221fefc6, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  serverIP: 127.0.0.1
-  serverPort: 65432
   m_image: {fileID: 1094083037}
+  m_targetWidth: 740
+  m_targetHeight: 740
   m_cameraAccess: {fileID: 1608124433}
-  leftEyeCamera: {fileID: 1494685904}
-  environmentRaycastManager: {fileID: 272605734}
-  InteractiveCube: {fileID: 613029437}
-  debugText: {fileID: 746706242}
-  environmentMask:
-    serializedVersion: 2
-    m_Bits: 63
-  targetWidth: 720
-  targetHeight: 720
-  secureMaterial: {fileID: 2100000, guid: eba957e988718ab4c85bee62c133feaf, type: 2}
-  defaultMaterial: {fileID: 10303, guid: 0000000000000000f000000000000000, type: 0}
-  sensitivity: 0.1
-  targetFPS: 30
+  m_interactiveCube: {fileID: 613029437}
+  m_debugText: {fileID: 746706242}
+  m_secureMaterial: {fileID: 2100000, guid: eba957e988718ab4c85bee62c133feaf, type: 2}
+  m_defaultMaterial: {fileID: 10302, guid: 0000000000000000f000000000000000, type: 0}
 --- !u!1 &1143997135
 GameObject:
   m_ObjectHideFlags: 0
