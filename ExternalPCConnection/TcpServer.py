@@ -12,6 +12,7 @@ import time
 import csv
 from datetime import datetime
 
+latest_timestamp = 0
 running = True
 
 send_queue = queue.Queue()
@@ -39,18 +40,30 @@ except Exception as e:
     use_hands = False
     print(f"Hand tracking initialization error: {e}")
 
-def data_manager():
+def data_manager(client_alive):
     print(f"Data manager started")
     global running
     global latest_timestamp
+    latest_grasp_index = 0
     latest_hand_index = 0
 
     while running:
+        if use_inference == True:
+            if latest_grasp_index < predictor.frame_id:
+                latest_grasp_index = predictor.frame_id
+
+                if predictor.latest_prediction == True:
+                    send_queue.put((latest_timestamp, [1.0]))
+                else:
+                    send_queue.put((latest_timestamp, [0.0]))
+
         if use_hands == True:
             if latest_hand_index < leap_thread.get_latest_frame_id():
                 latest_hand_index = leap_thread.get_latest_frame_id()
 
                 send_queue.put((latest_timestamp, leap_thread.get_latest_hands_flattened()))
+
+    time.sleep(0.001)
 
 
 def receiver_thread(client_socket, addr):
@@ -144,6 +157,9 @@ def sender_thread(client_socket, addr):
 def handle_client(client_socket, addr):
     print(f'Got a connection from {str(addr)}')
 
+    client_alive = threading.Event()
+    client_alive.set()
+
     # Send an initial welcome message
     # client_socket.send(b'Server says connected') # interferes with corner processing in Unity
 
@@ -155,12 +171,15 @@ def handle_client(client_socket, addr):
     tx_thread = threading.Thread(target=sender_thread, args=(client_socket, addr))
     tx_thread.start()
 
-    dm_thread = threading.Thread(target=data_manager)
+    dm_thread = threading.Thread(target=data_manager, args=(client_alive,))
     dm_thread.start()
 
     # Wait for both threads to finish (which happens only when an error occurs)
     rx_thread.join()
     tx_thread.join()
+
+    client_alive.clear() 
+    dm_thread.join()
 
     client_socket.close()
     print(f"Connection with {addr} closed.")

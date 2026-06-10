@@ -41,6 +41,7 @@ class GraspInference(threading.Thread):
         self.running = True
         self.daemon = True
 
+        self.frame_id = 0
         self.ser.reset_input_buffer()
 
     def run(self):
@@ -66,6 +67,7 @@ class GraspInference(threading.Thread):
 
                 if isinstance(pred_onx, np.ndarray):
                     self.latest_prediction = pred_onx[0][0]
+                    self.frame_id += 1
 
     def is_grasped(self):
         if self.latest_prediction is None:
