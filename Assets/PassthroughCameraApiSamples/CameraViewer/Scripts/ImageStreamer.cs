@@ -52,7 +52,10 @@ public class ImageStreamer : MonoBehaviour
     private NetworkStream m_stream;
     private Thread m_receiveThread;
     private bool m_isNetworkRunning = false;
-    private readonly Queue<(ulong timestamp, float[] data)> m_receiveQueue = new Queue<(ulong, float[])>();
+    private readonly Queue<HandTrackingFrame> m_receiveQueue = new Queue<HandTrackingFrame>();
+    // Public access to hand data
+    public HandTrackingFrame LatestHandFrame { get; private set; }
+    public static event Action<HandTrackingFrame> OnHandFrameReceived;
 
     [Header("Tuning Sensitivity")]
     private float m_sensitivity = 0.00001f;
@@ -249,11 +252,13 @@ public class ImageStreamer : MonoBehaviour
         {
             while (m_receiveQueue.Count > 0)
             {
-                var (timestamp, data) = m_receiveQueue.Dequeue();
-                // Use your data here:
-                // networkPacket.timestamp (ulong)
-                // networkPacket.data (float[])
-                Debug.Log($"[TCP] Dequeued network message. Timestamp: {timestamp}, Floats: {data.Length}");
+                HandTrackingFrame frame = m_receiveQueue.Dequeue();
+
+                // Update the public property
+                LatestHandFrame = frame;
+
+                // Fire the event for any listening scripts
+                OnHandFrameReceived?.Invoke(frame);
             }
         }
     }
@@ -342,10 +347,33 @@ public class ImageStreamer : MonoBehaviour
                     float[] receivedFloats = new float[floatCount];
                     Buffer.BlockCopy(byteBuffer, 0, receivedFloats, 0, byteLength);
 
+                    HandTrackingFrame frame = new HandTrackingFrame
+                    {
+                        timestamp = timestamp
+                    };
+
+                    if (receivedFloats.Length > 0)
+                    {
+                        frame.handCount = Mathf.RoundToInt(receivedFloats[0]);
+                        frame.hands = new HandLandmarks[frame.handCount];
+
+                        for (int i = 0; i < frame.handCount; i++)
+                        {
+                            // Each hand block is exactly 64 floats long, starting after the initial count float
+                            int startIndex = 1 + i * 64;
+                            frame.hands[i] = HandLandmarks.Parse(receivedFloats, startIndex);
+                        }
+                    }
+                    else
+                    {
+                        frame.handCount = 0;
+                        frame.hands = Array.Empty<HandLandmarks>();
+                    }
+
                     // Enqueue safely for processing on the Main Thread
                     lock (m_receiveQueue)
                     {
-                        m_receiveQueue.Enqueue((timestamp, receivedFloats));
+                        m_receiveQueue.Enqueue(frame);
                     }
                 }
             }
