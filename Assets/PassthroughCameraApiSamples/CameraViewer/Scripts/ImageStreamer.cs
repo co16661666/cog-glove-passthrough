@@ -6,6 +6,11 @@ using System;
 // using System.Net;
 // using Unity.Collections.LowLevel.Unsafe;
 
+// For TCP communication
+using System.Net.Sockets;
+using System.Threading;
+using System.IO;
+
 using Newtonsoft.Json;
 
 // UnityEngine imports
@@ -28,7 +33,7 @@ using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 public class ImageStreamer : MonoBehaviour
 {
-    private readonly Queue<CVPose> m_receivedDataQueue = new Queue<CVPose>(); // Buffer for incoming data
+    private readonly Queue<CVPose> m_poseQueue = new Queue<CVPose>();
 
     // Parameters
     [SerializeField] private RawImage m_image;
@@ -39,10 +44,18 @@ public class ImageStreamer : MonoBehaviour
     [SerializeField] private Text m_debugText;
     [SerializeField] private Material m_secureMaterial;
     [SerializeField] private Material m_defaultMaterial;
+    // TCP Parameters
+    [Header("TCP Network Settings")]
+    [SerializeField] private string m_host = "127.0.0.1";
+    [SerializeField] private int m_port = 65432;
+    private TcpClient m_tcpClient;
+    private NetworkStream m_stream;
+    private Thread m_receiveThread;
+    private bool m_isNetworkRunning = false;
+    private readonly Queue<(ulong timestamp, float[] data)> m_receiveQueue = new Queue<(ulong, float[])>();
 
     [Header("Tuning Sensitivity")]
     private float m_sensitivity = 0.00001f;
-
     // One euro filter parameters
     private float m_minCutoffPosition = 0.70f;
     private float m_betaPosition = 10.0f;
@@ -130,6 +143,9 @@ public class ImageStreamer : MonoBehaviour
                 ", cx=" + m_cameraAccess.Intrinsics.PrincipalPoint.x +
                 ", cy=" + m_cameraAccess.Intrinsics.PrincipalPoint.y);
 
+        // Connect to TCP server
+        ConnectToServer();
+
         // Setup One Euro Filter
         // positionFilter = new OneEuroVector3(minCutoffPosition, betaPosition);
         // rotationFilter = new OneEuroQuaternion(minCutoffRotation, betaRotation);
@@ -183,7 +199,7 @@ public class ImageStreamer : MonoBehaviour
                     Debug.Log("C++ processing completed for timestamp: " + m_timestamp);
                     if (result.poseSuccess != 0)
                     {
-                        m_receivedDataQueue.Enqueue(result);
+                        m_poseQueue.Enqueue(result);
                     }
                     Debug.Log("Result - Position: (" + result.tx + ", " + result.ty + ", " + result.tz + ") | Rotation: (" + result.rx + ", " + result.ry + ", " + result.rz + ")");
                 }
@@ -199,12 +215,12 @@ public class ImageStreamer : MonoBehaviour
         CVPose dataToProcess = default;
         bool hasData = false;
 
-        lock (m_receivedDataQueue)
+        lock (m_poseQueue)
         {
             // Dequeue oldest element in queue for processing
-            if (m_receivedDataQueue.Count > 0)
+            if (m_poseQueue.Count > 0)
             {
-                dataToProcess = m_receivedDataQueue.Dequeue();
+                dataToProcess = m_poseQueue.Dequeue();
                 hasData = true;
             }
         }
@@ -228,6 +244,18 @@ public class ImageStreamer : MonoBehaviour
 
             m_interactiveCube.GetComponent<Renderer>().material = isSecure ? m_secureMaterial : m_defaultMaterial;
         }
+
+        lock (m_receiveQueue)
+        {
+            while (m_receiveQueue.Count > 0)
+            {
+                var (timestamp, data) = m_receiveQueue.Dequeue();
+                // Use your data here:
+                // networkPacket.timestamp (ulong)
+                // networkPacket.data (float[])
+                Debug.Log($"[TCP] Dequeued network message. Timestamp: {timestamp}, Floats: {data.Length}");
+            }
+        }
     }
 
     private void OnDestroy()
@@ -236,6 +264,98 @@ public class ImageStreamer : MonoBehaviour
             Destroy(m_processBuffer);
         if (m_cpuTexture != null)
             Destroy(m_cpuTexture);
+
+        m_isNetworkRunning = false;
+
+        if (m_stream != null) m_stream.Close();
+        if (m_tcpClient != null) m_tcpClient.Close();
+        if (m_receiveThread != null && m_receiveThread.IsAlive)
+            m_receiveThread.Join(500);
+    }
+
+    private void ConnectToServer()
+    {
+        try
+        {
+            m_tcpClient = new TcpClient(m_host, m_port);
+            m_stream = m_tcpClient.GetStream();
+            m_isNetworkRunning = true;
+
+            m_receiveThread = new Thread(ReceiveDataLoop)
+            {
+                IsBackground = true
+            };
+            m_receiveThread.Start();
+            Debug.Log($"[TCP] Connected to server at {m_host}:{m_port}");
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"[TCP] Connection failed: {e.Message}");
+        }
+    }
+
+    public void SendFrameOverNetwork(ulong timestamp, float[] floatData)
+    {
+        if (m_stream == null || !m_stream.CanWrite) return;
+
+        try
+        {
+            BinaryWriter writer = new BinaryWriter(m_stream);
+
+            // 1. Write Header Info
+            writer.Write(timestamp);          // Header: Timestamp (ulong)
+            writer.Write(floatData.Length);    // Header: Size / Number of floats (int)
+
+            // 2. Convert float array directly into a compressed bit package (raw byte block)
+            byte[] bytePackage = new byte[floatData.Length * sizeof(float)];
+            Buffer.BlockCopy(floatData, 0, bytePackage, 0, bytePackage.Length);
+
+            // 3. Send package
+            writer.Write(bytePackage);
+            m_stream.Flush();
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"[TCP] Send error: {e.Message}");
+        }
+    }
+
+    private void ReceiveDataLoop()
+    {
+        BinaryReader reader = new BinaryReader(m_stream);
+
+        while (m_isNetworkRunning && m_stream != null)
+        {
+            try
+            {
+                // 1. Parse incoming Header
+                ulong timestamp = reader.ReadUInt64();
+                int floatCount = reader.ReadInt32();
+
+                // 2. Read the bit-packed array based on the float count
+                int byteLength = floatCount * sizeof(float);
+                byte[] byteBuffer = reader.ReadBytes(byteLength);
+
+                if (byteBuffer.Length == byteLength)
+                {
+                    // Decompress the package of bits back into an array of floats
+                    float[] receivedFloats = new float[floatCount];
+                    Buffer.BlockCopy(byteBuffer, 0, receivedFloats, 0, byteLength);
+
+                    // Enqueue safely for processing on the Main Thread
+                    lock (m_receiveQueue)
+                    {
+                        m_receiveQueue.Enqueue((timestamp, receivedFloats));
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                if (m_isNetworkRunning)
+                    Debug.LogError($"[TCP] Read/Disconnect error: {e.Message}");
+                break;
+            }
+        }
     }
 
     private void HandleControllerTuning()
