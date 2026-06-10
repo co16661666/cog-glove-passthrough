@@ -27,10 +27,10 @@ public class TcpDataClient : MonoBehaviour
     private Thread m_receiveThread;
     private bool m_isNetworkRunning = false;
     private readonly Queue<HandTrackingFrame> m_receiveQueue = new Queue<HandTrackingFrame>();
-    // Public access to hand data
+    // Public access to data
     public HandTrackingFrame LatestHandFrame { get; private set; }
     public static event Action<HandTrackingFrame> OnHandFrameReceived;
-    private bool m_handshakeCompleted = true;
+    public bool Grasped = false;
 
     private void Start()
     {
@@ -130,8 +130,14 @@ public class TcpDataClient : MonoBehaviour
                 if (byteBuffer.Length == byteLength)
                 {
                     // Decompress the package of bits back into an array of floats
-                    float[] receivedFloats = new float[floatCount];
+                    float[] receivedFloats = new float[floatCount]; // Inefficient, may need to switch to declaration outside of loop
                     Buffer.BlockCopy(byteBuffer, 0, receivedFloats, 0, byteLength);
+
+                    if (receivedFloats.Length == 1)
+                    {
+                        Grasped = receivedFloats[0] == 1.0f;
+                        continue;
+                    }
 
                     HandTrackingFrame frame = new HandTrackingFrame
                     {
