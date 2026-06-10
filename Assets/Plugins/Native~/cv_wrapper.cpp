@@ -52,7 +52,7 @@ MarkerDetector tags;
 std::unordered_map<int, std::vector<cv::Point3f>> cube_points;
 PoseSolver* poser = nullptr;
 OpenCVKF* kf = nullptr;
-float marker_detection_timeout = 0.07f; // Timeout in seconds for marker loss detection
+float marker_detection_timeout = 0.016 * 12; // Timeout in seconds for marker loss detection
 unsigned long last_marker_detection_timestamp = 0;
 unsigned long last_image_timestamp = 0;
 
@@ -346,8 +346,10 @@ extern "C" {
         Eigen::Matrix<float, 15, 1> dx_k = Eigen::Matrix<float, 15, 1>::Zero();
         Eigen::Matrix<float, 15, 15> P_k = Eigen::Matrix<float, 15, 15>::Identity() * 0.5f;
         Eigen::Matrix<float, 6, 6> Q = Eigen::Matrix<float, 6, 6>::Identity();
-        Q.block<3, 3>(0, 0) = Eigen::Matrix3f::Identity() * 1E-1f;
-        Q.block<3, 3>(3, 3) = Eigen::Matrix3f::Identity() * 8E-2f;
+        // Q.block<3, 3>(0, 0) = Eigen::Matrix3f::Identity() * 1E-1f;
+        // Q.block<3, 3>(3, 3) = Eigen::Matrix3f::Identity() * 8E-2f;
+        Q.block<3, 3>(0, 0) = Eigen::Matrix3f::Identity() * 1E-1f; // TODO: attempt to tighten Q
+        Q.block<3, 3>(3, 3) = Eigen::Matrix3f::Identity() * 16E-4f;
         Eigen::Matrix<float, 6, 6> R = Eigen::Matrix<float, 6, 6>::Identity() * 0.1f;
         R.block<3, 3>(0, 0) = Eigen::Vector3f(5E-4,   2E-4,   3E-4).asDiagonal(); // TODO: Tighten value, such a low R could lead to drifting
         R.block<3, 3>(3, 3) = Eigen::Vector3f(6e-3,   1.2e-2,  1.2e-2).asDiagonal();
