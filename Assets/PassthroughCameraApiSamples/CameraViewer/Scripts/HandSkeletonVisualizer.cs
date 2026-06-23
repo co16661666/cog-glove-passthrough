@@ -1,18 +1,12 @@
 using System;
-using System.Reflection;
 using UnityEngine;
 
 /// <summary>
 /// Attach to a Sphere GameObject. On Start it hides that sphere and uses it as the
 /// scene root, spawning child spheres for every hand landmark and LineRenderers for
-/// every bone connection. Reads HandTrackingFrame from a data-manager component via
-/// reflection so you don't need a hard dependency on its concrete type.
-///
-/// Inspector setup:
-///   1. Drag your global data-manager GameObject's component into "Data Manager".
-///   2. (Optional) Assign a Joint Material and Bone Material, or leave blank for
-///      auto-created Unlit materials.
-///   3. Tweak Joint Radius, Bone Width, and per-hand colours as desired.
+/// every bone connection. 
+/// 
+/// Efficiently updates via event subscription rather than polling.
 /// </summary>
 [RequireComponent(typeof(MeshRenderer))]
 public class HandSkeletonVisualizer : MonoBehaviour
@@ -24,16 +18,6 @@ public class HandSkeletonVisualizer : MonoBehaviour
     private const int MAX_HANDS       = 2;
     private const int LANDMARK_COUNT  = 21;
 
-    /// <summary>
-    /// Landmark index pairs that form each bone segment.
-    /// Indices follow the MediaPipe / HandLandmarks layout:
-    ///   0  = Wrist
-    ///   1–4  = Thumb  (CMC, MCP, IP, Tip)
-    ///   5–8  = Index  (MCP, PIP, DIP, Tip)
-    ///   9–12 = Middle (MCP, PIP, DIP, Tip)
-    ///  13–16 = Ring   (MCP, PIP, DIP, Tip)
-    ///  17–20 = Pinky  (MCP, PIP, DIP, Tip)
-    /// </summary>
     private static readonly int[][] BoneConnections =
     {
         // Thumb
@@ -53,10 +37,8 @@ public class HandSkeletonVisualizer : MonoBehaviour
     // ─────────────────────────────────────────────────────────────────────────
     // Inspector fields
     // ─────────────────────────────────────────────────────────────────────────
-
-    [Header("Data Source")]
-    [Tooltip("Drag the MonoBehaviour that exposes 'LatestHandFrame' here.")]
-    [SerializeField] private MonoBehaviour dataManager;
+    
+    // NOTE: The dataManager field has been completely removed!
 
     [Header("Visuals")]
     [Tooltip("World-space radius of each joint sphere.")]
@@ -78,13 +60,8 @@ public class HandSkeletonVisualizer : MonoBehaviour
     // Runtime state
     // ─────────────────────────────────────────────────────────────────────────
 
-    // [handSlot][landmarkIndex]
     private GameObject[][] _jointObjects;
-    // [handSlot][boneIndex]
-    private LineRenderer[] [] _boneLines;
-
-    // Reflection handle — avoids a hard compile-time dependency on the manager type.
-    private PropertyInfo _frameProperty;
+    private LineRenderer[][] _boneLines;
 
     // ─────────────────────────────────────────────────────────────────────────
     // Unity lifecycle
@@ -92,44 +69,29 @@ public class HandSkeletonVisualizer : MonoBehaviour
 
     private void Awake()
     {
-        // The sphere this script lives on acts only as a scene-graph root;
-        // hide its own renderer so it doesn't appear in the scene.
         GetComponent<MeshRenderer>().enabled = false;
-
-        // Bind to data manager via reflection.
-        if (dataManager != null)
-        {
-            _frameProperty = dataManager.GetType()
-                                        .GetProperty("LatestHandFrame",
-                                                     BindingFlags.Public | BindingFlags.Instance);
-        }
-
-        if (_frameProperty == null)
-        {
-            Debug.LogError(
-                "[HandSkeletonVisualizer] Could not find public property 'LatestHandFrame' " +
-                "on the assigned data manager. Check the reference in the Inspector.");
-        }
-
         BuildPooledObjects();
     }
 
-    private void Update()
+    private void OnEnable()
     {
-        if (_frameProperty == null) return;
+        // 1. Subscribe to the event when this GameObject is turned on.
+        // Every time the TCP client fires this event, our UpdateSkeleton method will run.
+        TcpDataClient.OnHandFrameReceived += UpdateSkeleton;
+    }
 
-        HandTrackingFrame frame;
-        try
-        {
-            // Unbox the struct value returned by reflection.
-            frame = (HandTrackingFrame)_frameProperty.GetValue(dataManager);
-        }
-        catch (Exception e)
-        {
-            Debug.LogWarning($"[HandSkeletonVisualizer] Could not read frame: {e.Message}");
-            return;
-        }
+    private void OnDisable()
+    {
+        // 2. CRITICAL: Always unsubscribe when disabled or destroyed to prevent memory leaks!
+        TcpDataClient.OnHandFrameReceived -= UpdateSkeleton;
+    }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // Event Handler (Replaces the old Update loop)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private void UpdateSkeleton(HandTrackingFrame frame)
+    {
         // Hide everything, then re-enable only what's needed this frame.
         SetAllObjectsActive(false);
 
@@ -167,7 +129,6 @@ public class HandSkeletonVisualizer : MonoBehaviour
         _jointObjects = new GameObject[MAX_HANDS][];
         _boneLines    = new LineRenderer[MAX_HANDS][];
 
-        // Pre-create fallback materials once (avoids per-object allocation).
         Material fallbackJoint = BuildFallbackMaterial(Color.white);
         Material fallbackBone  = BuildFallbackMaterial(Color.white);
 
@@ -184,15 +145,10 @@ public class HandSkeletonVisualizer : MonoBehaviour
                 go.transform.SetParent(transform, worldPositionStays: false);
                 go.transform.localScale = Vector3.one * (jointRadius * 2f);
 
-                // Remove physics; this is a pure visualizer.
                 Destroy(go.GetComponent<SphereCollider>());
 
-                // Apply material + colour.
                 var mr = go.GetComponent<MeshRenderer>();
-                mr.sharedMaterial = jointMaterial != null
-                    ? jointMaterial
-                    : fallbackJoint;
-                // Instance the material so each hand can have its own colour.
+                mr.sharedMaterial = jointMaterial != null ? jointMaterial : fallbackJoint;
                 mr.material.color = handColor;
 
                 go.SetActive(false);
@@ -214,10 +170,7 @@ public class HandSkeletonVisualizer : MonoBehaviour
                 lr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
                 lr.receiveShadows = false;
 
-                // Instance material so colour is independent per hand.
-                lr.material = boneMaterial != null
-                    ? new Material(boneMaterial)
-                    : fallbackBone;
+                lr.material = boneMaterial != null ? new Material(boneMaterial) : fallbackBone;
                 lr.material.color = handColor;
                 lr.startColor = handColor;
                 lr.endColor   = handColor;
@@ -232,9 +185,6 @@ public class HandSkeletonVisualizer : MonoBehaviour
     // Helpers
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Flattens HandLandmarks into an ordered array matching BoneConnections indices.
-    /// </summary>
     private static Vector3[] GetOrderedLandmarks(HandLandmarks h)
     {
         return new[]
@@ -250,9 +200,6 @@ public class HandSkeletonVisualizer : MonoBehaviour
 
     private static Material BuildFallbackMaterial(Color color)
     {
-        // "Sprites/Default" is available in both Built-in and URP pipelines and
-        // renders without lighting, which is ideal for a debug overlay.
-        // For HDRP, swap "Sprites/Default" for "HDRP/Unlit".
         var shader = Shader.Find("Sprites/Default") ?? Shader.Find("Unlit/Color");
         var mat    = new Material(shader) { color = color };
         return mat;
@@ -262,11 +209,8 @@ public class HandSkeletonVisualizer : MonoBehaviour
     {
         for (int h = 0; h < MAX_HANDS; h++)
         {
-            foreach (var go in _jointObjects[h])
-                go.SetActive(active);
-
-            foreach (var lr in _boneLines[h])
-                lr.gameObject.SetActive(active);
+            foreach (var go in _jointObjects[h]) go.SetActive(active);
+            foreach (var lr in _boneLines[h]) lr.gameObject.SetActive(active);
         }
     }
 }
