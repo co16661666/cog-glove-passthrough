@@ -862,6 +862,7 @@ GameObject:
   - component: {fileID: 613029441}
   - component: {fileID: 613029440}
   - component: {fileID: 613029439}
+  - component: {fileID: 613029442}
   m_Layer: 0
   m_Name: Cube
   m_TagString: Untagged
@@ -937,6 +938,21 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &613029442
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 613029437}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 1e5ac43e6be8a724e860554d784ba94f, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  tcpClient: {fileID: 1438792197}
+  normalColor: {r: 1, g: 1, b: 1, a: 1}
+  graspedColor: {r: 0.05281806, g: 1, b: 0, a: 1}
 --- !u!1 &658477962
 GameObject:
   m_ObjectHideFlags: 0
@@ -1311,7 +1327,6 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: e315f27f085ffed49b848729fceb1277, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  dataManager: {fileID: 1438792197}
   jointRadius: 0.012
   boneWidth: 0.006
   jointMaterial: {fileID: 0}
