@@ -180,12 +180,12 @@ public class ImageStreamer : MonoBehaviour
 
                     ProcessImage(imgDataPtr, m_targetWidth, m_targetHeight, m_timestamp, cameraPoseStruct, out CVPose result);
 
-                    Debug.Log("C++ processing completed for timestamp: " + m_timestamp);
+                    // Debug.Log("C++ processing completed for timestamp: " + m_timestamp);
                     if (result.poseSuccess != 0)
                     {
                         m_receivedDataQueue.Enqueue(result);
                     }
-                    Debug.Log("Result - Position: (" + result.tx + ", " + result.ty + ", " + result.tz + ") | Rotation: (" + result.rx + ", " + result.ry + ", " + result.rz + ")");
+                    // Debug.Log("Result - Position: (" + result.tx + ", " + result.ty + ", " + result.tz + ") | Rotation: (" + result.rx + ", " + result.ry + ", " + result.rz + ")");
                 }
             }
         }
@@ -211,7 +211,7 @@ public class ImageStreamer : MonoBehaviour
 
         if (hasData)
         {
-            Debug.Log("Server message received: " + JsonConvert.SerializeObject(dataToProcess));
+            // Debug.Log("Server message received: " + JsonConvert.SerializeObject(dataToProcess));
 
             // 1. Convert OpenCV (RHS) to Unity (LHS)
             Vector3 worldPos = new Vector3(dataToProcess.tx, -dataToProcess.ty, dataToProcess.tz);
