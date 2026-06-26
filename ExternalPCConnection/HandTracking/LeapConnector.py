@@ -109,7 +109,7 @@ class LeapTrackingThread(threading.Thread):
         def on_tracking_event(self, event):
             current_hands = []
 
-            for hand in event.hand:
+            for hand in event.hands:
                 hand_type = "left" if str(hand.type) == "HandType.Left" else "right"
 
                 # All 21 landmarks as a named dict
@@ -134,7 +134,7 @@ class LeapTrackingThread(threading.Thread):
     def run(self):
         print("[Leap] Thread started.")
         with self.connection.open():
-            self.connection.set_tracking_mode(leap.TrackingMode.Desktop)
+            self.connection.set_tracking_mode(leap.TrackingMode.HMD) # HMD = Head Mounted Device, also ScreenTop or Desktop
             while self.running:
                 time.sleep(0.01)
         print("[Leap] Thread stopped.")
@@ -152,6 +152,7 @@ class LeapTrackingThread(threading.Thread):
             floats.append(0.0 if hand["type"] == "left" else 1.0)
             for xyz in hand["keypoints_list"]:
                 floats.extend(xyz)
+        print(floats)
         return floats
 
     def stop(self):
