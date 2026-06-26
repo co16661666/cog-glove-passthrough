@@ -31,13 +31,13 @@ dotnet_diagnostic.IDE0004.severity = warning
 dotnet_diagnostic.IDE0005.severity = warning
 
 # Use var instead of explicit type
-dotnet_diagnostic.IDE0007.severity = warning
+dotnet_diagnostic.IDE0007.severity = none
 # csharp_style_var_for_built_in_types
 # csharp_style_var_when_type_is_apparent
 # csharp_style_var_elsewhere
 
 # Use explicit type instead of var
-dotnet_diagnostic.IDE0008.severity = warning
+dotnet_diagnostic.IDE0008.severity = none
 # csharp_style_var_for_built_in_types
 # csharp_style_var_when_type_is_apparent
 # csharp_style_var_elsewhere
@@ -316,7 +316,7 @@ dotnet_diagnostic.IDE0084.severity = warning
 # visual_basic_style_prefer_isnot_expression
 
 # Simplify new expression
-dotnet_diagnostic.IDE0090.severity = warning
+dotnet_diagnostic.IDE0090.severity = none
 csharp_style_implicit_object_creation_when_type_is_apparent = true
 
 # Remove unnecessary equality operator
