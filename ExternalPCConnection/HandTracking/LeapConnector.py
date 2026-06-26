@@ -152,7 +152,7 @@ class LeapTrackingThread(threading.Thread):
             floats.append(0.0 if hand["type"] == "left" else 1.0)
             for xyz in hand["keypoints_list"]:
                 floats.extend(xyz)
-        print(floats)
+        time.sleep(0.011) # Limit at ~90 Hz
         return floats
 
     def stop(self):
