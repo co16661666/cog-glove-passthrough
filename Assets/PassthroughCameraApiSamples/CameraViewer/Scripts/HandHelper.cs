@@ -38,7 +38,7 @@ public struct HandLandmarks
     public Vector3 pinkyTip;
 
     // Parse 64-float byte chunk
-    public static HandLandmarks Parse(float[] data, int startIndex)
+    public static HandLandmarks Parse(float[] data, int startIndex, Pose cameraPose)
     {
         HandLandmarks hand = new HandLandmarks();
         
@@ -49,9 +49,10 @@ public struct HandLandmarks
         // Helper to extract sequential Vector3 points
         Vector3 GetV3()
         {
-            Vector3 v = new Vector3(data[idx], data[idx + 1], data[idx + 2]);
+            // Vector3 v = new Vector3(-data[idx] / 1000f, -data[idx + 2] / 1000f, data[idx + 1] / 1000); // Convert units and coordinates (m -> mm, -z)
+            Vector3 v = new Vector3(-data[idx] / 1000f, -data[idx + 2] / 1000f, data[idx + 1] / 1000); // Convert units (m -> mm)
             idx += 3;
-            return v;
+            return (cameraPose.rotation * v) + cameraPose.position;
         }
 
         hand.wrist    = GetV3();

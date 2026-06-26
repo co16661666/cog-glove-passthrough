@@ -16,12 +16,14 @@ using UnityEngine;
 
 // using PassthroughCameraSamples;
 using System.Collections.Generic;
+using Meta.XR;
 public class TcpDataClient : MonoBehaviour
 {
     // TCP Parameters
     [Header("TCP Network Settings")]
     [SerializeField] private string m_host = "127.0.0.1";
     [SerializeField] private int m_port = 65432;
+    [SerializeField] private PassthroughCameraAccess m_cameraAccess;
     private TcpClient m_tcpClient;
     private NetworkStream m_stream;
     private Thread m_receiveThread;
@@ -153,7 +155,7 @@ public class TcpDataClient : MonoBehaviour
                         {
                             // Each hand block is exactly 64 floats long, starting after the initial count float
                             int startIndex = 1 + i * 64;
-                            frame.hands[i] = HandLandmarks.Parse(receivedFloats, startIndex);
+                            frame.hands[i] = HandLandmarks.Parse(receivedFloats, startIndex, m_cameraAccess.GetCameraPose());
                         }
                     }
                     else
