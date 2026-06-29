@@ -17,6 +17,10 @@ using UnityEngine;
 // using PassthroughCameraSamples;
 using System.Collections.Generic;
 using Meta.XR;
+
+// Immersive Debugger
+using Meta.XR.ImmersiveDebugger;
+
 public class TcpDataClient : MonoBehaviour
 {
     // TCP Parameters
@@ -24,6 +28,10 @@ public class TcpDataClient : MonoBehaviour
     [SerializeField] private string m_host = "127.0.0.1";
     [SerializeField] private int m_port = 65432;
     [SerializeField] private PassthroughCameraAccess m_cameraAccess;
+    [DebugMember(Tweakable = true, Category = "Adjustment", Min = -0.5f, Max = 0.5f)] public float HandOffsetX;
+    [DebugMember(Tweakable = true, Category = "Adjustment", Min = -0.5f, Max = 0.5f)] public float HandOffsetY;
+    [DebugMember(Tweakable = true, Category = "Adjustment", Min = -0.5f, Max = 0.5f)] public float HandOffsetZ;
+    private Vector3 m_handOffset;
     private TcpClient m_tcpClient;
     private NetworkStream m_stream;
     private Thread m_receiveThread;
@@ -155,7 +163,8 @@ public class TcpDataClient : MonoBehaviour
                         {
                             // Each hand block is exactly 64 floats long, starting after the initial count float
                             int startIndex = 1 + i * 64;
-                            frame.hands[i] = HandLandmarks.Parse(receivedFloats, startIndex, m_cameraAccess.GetCameraPose());
+                            m_handOffset = new Vector3(HandOffsetX, HandOffsetY, HandOffsetZ);
+                            frame.hands[i] = HandLandmarks.Parse(receivedFloats, startIndex, m_cameraAccess.GetCameraPose(), m_handOffset);
                         }
                     }
                     else
