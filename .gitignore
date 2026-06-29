@@ -5,6 +5,7 @@ Logs/
 obj/
 Build/
 Builds/
+
 .vs/
 .vsconfig
 *.csproj
@@ -12,6 +13,7 @@ Builds/
 /.utmp
 *.zip
 *.apk
+
 RuntimeActionBindings.json
 RuntimeActionBindings.json.meta
 ProjectSettings\Packages\com.unity.testtools.codecoverage\Settings.json
@@ -19,3 +21,10 @@ PerformanceTestRun*.*
 StreamingAssets*
 buildInfo.txt
 Packages/packages-lock.json
+
+**/Native~/build/
+**/Native~/.vs/
+**/Native~/.vscode/
+**/Native~/cmake-build-*/
+**/Native~/out/
+*_backup.cpp

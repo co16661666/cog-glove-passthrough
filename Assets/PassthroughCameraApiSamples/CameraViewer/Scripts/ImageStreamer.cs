@@ -2,105 +2,101 @@
 
 // System imports
 using System;
-using System.Text;
-using System.Net;
+// using System.Text;
+// using System.Net;
+// using Unity.Collections.LowLevel.Unsafe;
 
-// TCP socket imports
-using System.Net.Sockets;
-using System.Threading;
 using Newtonsoft.Json;
 
 // UnityEngine imports
 using UnityEngine;
 using UnityEngine.UI;
 using UnityEngine.Assertions;
-using UnityEngine.Rendering;
+// using UnityEngine.Rendering;
 
 // For passthrough camera
 using System.Runtime.InteropServices;
 using System.Collections;
 
 using Meta.XR;
-using Meta.XR.Samples;
-using Meta.XR.EnvironmentDepth;
+// using Meta.XR.Samples;
+// using Meta.XR.EnvironmentDepth;
 
-using PassthroughCameraSamples;
+// using PassthroughCameraSamples;
 using System.Collections.Generic;
+using Unity.Collections;
+using Unity.Collections.LowLevel.Unsafe;
 public class ImageStreamer : MonoBehaviour
 {
-    // Server connection parameters
-    public string serverIP = "127.0.0.1";
-    public int serverPort = 65432;
-
-    private TcpClient client;
-    private NetworkStream stream;
-    private Thread clientReceiveThread;
-    private Thread clientSendThread;
-
-    private readonly Queue<CornerData> receivedDataQueue = new Queue<CornerData>(); // Buffer for incoming data
+    private readonly Queue<CVPose> m_receivedDataQueue = new Queue<CVPose>(); // Buffer for incoming data
 
     // Parameters
     [SerializeField] private RawImage m_image;
+    [SerializeField] private int m_targetWidth;
+    [SerializeField] private int m_targetHeight;
     [SerializeField] private PassthroughCameraAccess m_cameraAccess;
-    [SerializeField] private Transform leftEyeCamera;
-    [SerializeField] private EnvironmentRaycastManager environmentRaycastManager;
-    [SerializeField] private GameObject InteractiveCube;
-    [SerializeField] private Text debugText;
-    [SerializeField] private LayerMask environmentMask;
-
-    [SerializeField] private int targetWidth;
-    [SerializeField] private int targetHeight;
-
-    [SerializeField] public Material secureMaterial;
-    [SerializeField] public Material defaultMaterial;
+    [SerializeField] private GameObject m_interactiveCube;
+    [SerializeField] private Text m_debugText;
+    [SerializeField] private Material m_secureMaterial;
+    [SerializeField] private Material m_defaultMaterial;
 
     [Header("Tuning Sensitivity")]
-    public float sensitivity = 0.00001f;
+    private float m_sensitivity = 0.00001f;
 
     // One euro filter parameters
-    private float minCutoffPosition = 0.70f;
-    private float betaPosition = 10.0f;
+    private float m_minCutoffPosition = 0.70f;
+    private float m_betaPosition = 10.0f;
 
-    private float minCutoffRotation = 0.16f;
-    private float betaRotation = 0.25f;
+    private float m_minCutoffRotation = 0.16f;
+    private float m_betaRotation = 0.25f;
 
-    OneEuroVector3 positionFilter;
-    OneEuroQuaternion rotationFilter;
+    private OneEuroVector3 m_positionFilter;
+    private OneEuroQuaternion m_rotationFilter;
 
-    private bool handshakeCompleted = false;
+    private bool m_handshakeCompleted = true;
 
-    private Vector3 adjustmentOffset = new Vector3(0.0f, 0.0f, 0.0f);
-    bool euroAdjustment = false;
-
-    public float targetFPS = 30f;
-    private float m_lastSendTime = 0f;
-    private Texture2D m_cpuTexture;
-    private RenderTexture m_smallDescriptor;
+    private Vector3 m_adjustmentOffset = new Vector3(0.0f, 0.0f, 0.0f);
+    private bool m_euroAdjustment = false;
 
     // Image sending
-    private DateTime startTime;
-    private ulong timestamp = 0; // Timestamp of frame being processed
-    private ulong sendTimestamp = 0; // Timestamp of image being sent
-    private Pose sendCameraPose; // Camera pose at the time of capture to send alongside image
-    private bool asyncReadbackInProgress = false;
-    private byte[] sendFrame = null;
-    private readonly object bufferLock = new object();
+    private DateTime m_startTime;
+    private ulong m_timestamp = 0; // Timestamp of frame being processed
 
-    private long lastCameraTimestamp = 0;
+    // Double-buffering for GPU/CPU sync
+    private RenderTexture m_processBuffer;  // Buffer being processed by C++
+    private Texture2D m_cpuTexture;
 
-    // Pose history
-    public PoseHistory prevPose = new PoseHistory(10);
+    private long m_lastCameraTimestamp = 0;
 
-    public class CornerData
+    [StructLayout(LayoutKind.Sequential)]
+    private struct CVPose
     {
-        public string id;
+        public float tx, ty, tz;
+        public float rx, ry, rz;
 
-        public float[] tvec;
-        public float[] rvec;
-
-        public bool grasped;
+        public int grasped;
+        public int poseSuccess;
         public ulong timestamp;
     }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct CameraPose
+    {
+        public float tx, ty, tz, rw, rx, ry, rz;
+    }
+
+    [DllImport("cv_wrapper")]
+    private static extern unsafe void ProcessImage(
+        void* imgData, int width, int height, ulong timestamp,
+        CameraPose cam_pose, out CVPose result
+    );
+
+    [DllImport("cv_wrapper")]
+    private static extern void RuntimeSetup(
+        float fx, float fy, float cx, float cy,
+        int targetWidth, int targetHeight,
+        int sensorWidth, int sensorHeight
+    );
 
     private IEnumerator Start()
     {
@@ -114,79 +110,82 @@ public class ImageStreamer : MonoBehaviour
         }
         // Set texture to the RawImage Ui element
         m_image.texture = m_cameraAccess.GetTexture();
-        startTime = m_cameraAccess.Timestamp;
+        m_startTime = m_cameraAccess.Timestamp;
+
+        // Initialize double-buffering textures
+        if (m_targetWidth > 0 && m_targetHeight > 0)
+        {
+            m_processBuffer = new RenderTexture(m_targetWidth, m_targetHeight, 0, RenderTextureFormat.R8);
+            m_cpuTexture = new Texture2D(m_targetWidth, m_targetHeight, TextureFormat.R8, false);
+        }
+
+        // OpenCV setup
+        RuntimeSetup(m_cameraAccess.Intrinsics.FocalLength.x, m_cameraAccess.Intrinsics.FocalLength.y,
+                    m_cameraAccess.Intrinsics.PrincipalPoint.x, m_cameraAccess.Intrinsics.PrincipalPoint.y,
+                    m_targetWidth, m_targetHeight,
+                    m_cameraAccess.Intrinsics.SensorResolution.x, m_cameraAccess.Intrinsics.SensorResolution.y);
+
+        Debug.Log("Runtime setup completed with intrinsics: fx=" + m_cameraAccess.Intrinsics.FocalLength.x +
+                ", fy=" + m_cameraAccess.Intrinsics.FocalLength.y +
+                ", cx=" + m_cameraAccess.Intrinsics.PrincipalPoint.x +
+                ", cy=" + m_cameraAccess.Intrinsics.PrincipalPoint.y);
 
         // Setup One Euro Filter
-        positionFilter = new OneEuroVector3(minCutoffPosition, betaPosition);
-        rotationFilter = new OneEuroQuaternion(minCutoffRotation, betaRotation);
+        // positionFilter = new OneEuroVector3(minCutoffPosition, betaPosition);
+        // rotationFilter = new OneEuroQuaternion(minCutoffRotation, betaRotation);
 
-        ConnectToServer();
-
-        // Pass intrinsics
-        try
-        {
-            if (stream != null && client != null && client.Connected)
-            {
-                float fx = m_cameraAccess.Intrinsics.FocalLength.x;
-                float fy = m_cameraAccess.Intrinsics.FocalLength.y;
-                float cx = m_cameraAccess.Intrinsics.PrincipalPoint.x;
-                float cy = m_cameraAccess.Intrinsics.PrincipalPoint.y;
-
-                string intrinsicsMessage = $"{fx},{fy},{cx},{cy},{targetWidth},{targetHeight}";
-                byte[] messageBytes = Encoding.UTF8.GetBytes(intrinsicsMessage);
-
-                stream.Write(messageBytes, 0, messageBytes.Length);
-            }
-        }
-        catch (Exception e)
-        {
-            Debug.LogError("Failed to send message: " + e.Message);
-        }
+        // float fx = m_cameraAccess.Intrinsics.FocalLength.x;
+        // float fy = m_cameraAccess.Intrinsics.FocalLength.y;
+        // float cx = m_cameraAccess.Intrinsics.PrincipalPoint.x;
+        // float cy = m_cameraAccess.Intrinsics.PrincipalPoint.y;
     }
 
     private void Update()
     {
-        if (handshakeCompleted && m_cameraAccess.IsPlaying)
+        if (m_handshakeCompleted && m_cameraAccess.IsPlaying)
         {
             Texture rawTexture = m_cameraAccess.GetTexture();
-            if (rawTexture == null) return;
+            if (rawTexture == null || m_processBuffer == null) return;
 
-            timestamp = (ulong)(m_cameraAccess.Timestamp - startTime).Ticks * 100; // Convert to nanoseconds
-            Pose capturePose = m_cameraAccess.GetCameraPose();
-
-            // 1. Initialize the small GPU buffer (RenderTexture)
-            if (m_smallDescriptor == null)
+            if (m_cameraAccess.Timestamp.Ticks != m_lastCameraTimestamp)
             {
-                m_smallDescriptor = new RenderTexture(targetWidth, targetHeight, 0, RenderTextureFormat.R8);
-            }
+                m_lastCameraTimestamp = m_cameraAccess.Timestamp.Ticks;
 
-            // 2. Initialize the CPU buffer (Texture2D) to match the small size
-            if (m_cpuTexture == null || m_cpuTexture.width != targetWidth)
-            {
-                m_cpuTexture = new Texture2D(targetWidth, targetHeight, TextureFormat.R8, false);
-            }
+                m_timestamp = (ulong)(m_cameraAccess.Timestamp - m_startTime).Ticks * 100; // Convert to nanoseconds
+                Pose capturePose = m_cameraAccess.GetCameraPose();
 
-            // 3. Downscale on the GPU
-            if (m_cameraAccess.Timestamp.Ticks != lastCameraTimestamp)
-            {
-                lastCameraTimestamp = m_cameraAccess.Timestamp.Ticks;
+                // Blit new frame to capture buffer (write)
+                Graphics.Blit(rawTexture, m_processBuffer);
+                GL.Flush();  // Ensure GPU finishes blitting
 
-                Graphics.Blit(rawTexture, m_smallDescriptor);
+                RenderTexture.active = m_processBuffer;
+                m_cpuTexture.ReadPixels(new Rect(0, 0, m_targetWidth, m_targetHeight), 0, 0);
+                RenderTexture.active = null;
 
-                // Synchronous readback
-                RenderTexture previous = RenderTexture.active;
-                RenderTexture.active = m_smallDescriptor;
-                m_cpuTexture.ReadPixels(new Rect(0, 0, targetWidth, targetHeight), 0, 0);
-                RenderTexture.active = previous;
-
-                byte[] rawBytes = m_cpuTexture.GetRawTextureData();
-
-                lock (bufferLock)
+                unsafe
                 {
-                    sendFrame = rawBytes;
-                    sendTimestamp = timestamp;
-                    sendCameraPose = capturePose;
-                    prevPose.addPose(timestamp, capturePose.position, capturePose.rotation);
+                    NativeArray<byte> pixelData = m_cpuTexture.GetRawTextureData<byte>();
+                    void* imgDataPtr = NativeArrayUnsafeUtility.GetUnsafeReadOnlyPtr(pixelData);
+
+                    var cameraPoseStruct = new CameraPose
+                    {
+                        tx = capturePose.position.x,
+                        ty = capturePose.position.y,
+                        tz = capturePose.position.z,
+                        rw = capturePose.rotation.w,
+                        rx = capturePose.rotation.x,
+                        ry = capturePose.rotation.y,
+                        rz = capturePose.rotation.z
+                    };
+
+                    ProcessImage(imgDataPtr, m_targetWidth, m_targetHeight, m_timestamp, cameraPoseStruct, out CVPose result);
+
+                    // Debug.Log("C++ processing completed for timestamp: " + m_timestamp);
+                    if (result.poseSuccess != 0)
+                    {
+                        m_receivedDataQueue.Enqueue(result);
+                    }
+                    // Debug.Log("Result - Position: (" + result.tx + ", " + result.ty + ", " + result.tz + ") | Rotation: (" + result.rx + ", " + result.ry + ", " + result.rz + ")");
                 }
             }
         }
@@ -194,103 +193,56 @@ public class ImageStreamer : MonoBehaviour
         HandleControllerTuning();
     }
 
-    //private void OnCompleteReadback(AsyncGPUReadbackRequest request, ulong timestamp, Pose capturePose)
-    //{
-    //    asyncReadbackInProgress = false;
-
-    //    if (request.hasError)
-    //    {
-    //        Debug.LogError("GPU readback error detected.");
-    //        return;
-    //    }
-
-    //    // Get the data from the GPU
-    //    var data = request.GetData<byte>();
-
-    //    //byte[] jpgBytes = ImageConversion.EncodeNativeArrayToJPG(data, m_smallDescriptor.graphicsFormat, (uint)targetWidth, (uint)targetHeight, 0, 60).ToArray();
-    //    byte[] rawBytes = data.ToArray();
-
-    //    lock (bufferLock)
-    //    {
-    //        //sendFrame = jpgBytes;
-    //        sendFrame = rawBytes;
-    //        sendTimestamp = timestamp;
-    //        sendCameraPose = capturePose;
-    //        prevPose.addPose(timestamp, capturePose.position, capturePose.rotation);
-    //    }
-    //}
-
-    byte[] GetBigEndianBytes(float value)
+    private void LateUpdate()
     {
-        byte[] bytes = BitConverter.GetBytes(value);
-        if (BitConverter.IsLittleEndian) Array.Reverse(bytes);
-        return bytes;
-    }
+        // Check for new data in the thread-safe queue every frame
+        CVPose dataToProcess = default;
+        bool hasData = false;
 
-    private void NetworkSenderLoop()
-    {
-        while (client != null && client.Connected)
+        lock (m_receivedDataQueue)
         {
-            byte[] dataToDraw = null;
-
-            // 1. Grab the latest frame if it exists
-            lock (bufferLock)
+            // Dequeue oldest element in queue for processing
+            if (m_receivedDataQueue.Count > 0)
             {
-                dataToDraw = sendFrame;
-                sendFrame = null; // Clear it so we don't send the same frame twice
-            }
-
-            // 2. If we have a fresh frame, send it
-            if (dataToDraw != null)
-            {
-                try
-                {
-                    int dataLength = dataToDraw.Length;
-                    byte[] lengthPrefix = BitConverter.GetBytes(dataLength);
-                    byte[] timestampBytes = BitConverter.GetBytes(sendTimestamp);
-                    byte[] posBytes = new byte[12]; // 3 floats * 4 bytes
-                    byte[] rotBytes = new byte[16]; // 4 floats for quaternion
-
-                    // Pack position
-                    Buffer.BlockCopy(GetBigEndianBytes(sendCameraPose.position.x), 0, posBytes, 0, 4);
-                    Buffer.BlockCopy(GetBigEndianBytes(sendCameraPose.position.y), 0, posBytes, 4, 4);
-                    Buffer.BlockCopy(GetBigEndianBytes(sendCameraPose.position.z), 0, posBytes, 8, 4);
-
-                    // Pack rotation (quaternion)
-                    Buffer.BlockCopy(GetBigEndianBytes(sendCameraPose.rotation.w), 0, rotBytes, 0, 4);
-                    Buffer.BlockCopy(GetBigEndianBytes(sendCameraPose.rotation.x), 0, rotBytes, 4, 4);
-                    Buffer.BlockCopy(GetBigEndianBytes(sendCameraPose.rotation.y), 0, rotBytes, 8, 4);
-                    Buffer.BlockCopy(GetBigEndianBytes(sendCameraPose.rotation.z), 0, rotBytes, 12, 4);
-
-                    if (BitConverter.IsLittleEndian) Array.Reverse(lengthPrefix);
-                    if (BitConverter.IsLittleEndian) Array.Reverse(timestampBytes);
-
-                    stream.Write(lengthPrefix, 0, 4); // 4 bytes
-                    stream.Write(timestampBytes, 0, 8); // 8 bytes
-                    stream.Write(posBytes, 0, 12); // 12 bytes
-                    stream.Write(rotBytes, 0, 16); // 16 bytes
-                    stream.Write(dataToDraw, 0, dataLength);
-                    stream.Flush(); // Ensure it leaves the buffer immediately
-                }
-                catch (Exception e)
-                {
-                    Debug.LogError("Send Error: " + e.Message);
-                    break;
-                }
-            }
-            else
-            {
-                // 3. If no new frame, sleep for 1ms to save CPU
-                Thread.Sleep(1);
+                dataToProcess = m_receivedDataQueue.Dequeue();
+                hasData = true;
             }
         }
+
+        if (hasData)
+        {
+            // Debug.Log("Server message received: " + JsonConvert.SerializeObject(dataToProcess));
+
+            // 1. Convert OpenCV (RHS) to Unity (LHS)
+            Vector3 worldPos = new Vector3(dataToProcess.tx, -dataToProcess.ty, dataToProcess.tz);
+
+            Vector3 rotAxis = new Vector3(dataToProcess.rx, dataToProcess.ry, dataToProcess.rz);
+            float angle = rotAxis.magnitude;
+            Vector3 axis = rotAxis.normalized;
+            Quaternion worldRot = Quaternion.AngleAxis(-angle * Mathf.Rad2Deg, new Vector3(axis.x, -axis.y, axis.z));
+
+            bool isSecure = dataToProcess.grasped != 0;
+
+            m_interactiveCube.transform.position = worldPos;
+            m_interactiveCube.transform.rotation = worldRot;
+
+            m_interactiveCube.GetComponent<Renderer>().material = isSecure ? m_secureMaterial : m_defaultMaterial;
+        }
+    }
+
+    private void OnDestroy()
+    {
+        if (m_processBuffer != null)
+            Destroy(m_processBuffer);
+        if (m_cpuTexture != null)
+            Destroy(m_cpuTexture);
     }
 
     private void HandleControllerTuning()
     {
         if (OVRInput.GetDown(OVRInput.Button.One))
         {
-            euroAdjustment = !euroAdjustment;
+            m_euroAdjustment = !m_euroAdjustment;
         }
 
         // A button
@@ -298,22 +250,22 @@ public class ImageStreamer : MonoBehaviour
         Vector2 rightStick = OVRInput.Get(OVRInput.Axis2D.PrimaryThumbstick, OVRInput.Controller.RTouch);
         if (rightStick.magnitude > 0.1f)
         {
-            if (euroAdjustment)
+            if (m_euroAdjustment)
             {
-                minCutoffPosition += rightStick.y * sensitivity * Time.deltaTime;
-                betaPosition += rightStick.x * sensitivity * Time.deltaTime;
+                m_minCutoffPosition += rightStick.y * m_sensitivity * Time.deltaTime;
+                m_betaPosition += rightStick.x * m_sensitivity * Time.deltaTime;
 
                 // Clamping to prevent negative values
-                minCutoffPosition = Mathf.Max(0.01f, minCutoffPosition);
-                betaPosition = Mathf.Max(0.0f, betaPosition);
+                m_minCutoffPosition = Mathf.Max(0.01f, m_minCutoffPosition);
+                m_betaPosition = Mathf.Max(0.0f, m_betaPosition);
 
-                positionFilter.UpdateParams(minCutoffPosition, betaPosition);
-                Debug.Log($"POS TUNING: MinCutoff: {minCutoffPosition:F3} | Beta: {betaPosition:F3}");
+                m_positionFilter.UpdateParams(m_minCutoffPosition, m_betaPosition);
+                Debug.Log($"POS TUNING: MinCutoff: {m_minCutoffPosition:F3} | Beta: {m_betaPosition:F3}");
             }
             else
             {
-                adjustmentOffset.y += rightStick.y * sensitivity * Time.deltaTime;
-                adjustmentOffset.z += rightStick.x * sensitivity * Time.deltaTime;
+                m_adjustmentOffset.y += rightStick.y * m_sensitivity * Time.deltaTime;
+                m_adjustmentOffset.z += rightStick.x * m_sensitivity * Time.deltaTime;
             }
         }
 
@@ -321,238 +273,27 @@ public class ImageStreamer : MonoBehaviour
         Vector2 leftStick = OVRInput.Get(OVRInput.Axis2D.PrimaryThumbstick, OVRInput.Controller.LTouch);
         if (leftStick.magnitude > 0.1f)
         {
-            if (euroAdjustment)
+            if (m_euroAdjustment)
             {
-                minCutoffRotation += leftStick.y * sensitivity * Time.deltaTime;
-                betaRotation += leftStick.x * sensitivity * Time.deltaTime;
+                m_minCutoffRotation += leftStick.y * m_sensitivity * Time.deltaTime;
+                m_betaRotation += leftStick.x * m_sensitivity * Time.deltaTime;
 
-                minCutoffRotation = Mathf.Max(0.01f, minCutoffRotation);
-                betaRotation = Mathf.Max(0.0f, betaRotation);
+                m_minCutoffRotation = Mathf.Max(0.01f, m_minCutoffRotation);
+                m_betaRotation = Mathf.Max(0.0f, m_betaRotation);
 
-                rotationFilter.UpdateParams(minCutoffRotation, betaRotation);
-                Debug.Log($"ROT TUNING: MinCutoff: {minCutoffRotation:F3} | Beta: {betaRotation:F3}");
+                m_rotationFilter.UpdateParams(m_minCutoffRotation, m_betaRotation);
+                Debug.Log($"ROT TUNING: MinCutoff: {m_minCutoffRotation:F3} | Beta: {m_betaRotation:F3}");
             }
             else
             {
-                adjustmentOffset.x += leftStick.x * sensitivity * Time.deltaTime;
+                m_adjustmentOffset.x += leftStick.x * m_sensitivity * Time.deltaTime;
             }
         }
 
-        if (euroAdjustment)
-        {
-            debugText.text = "POS mincutoff: " + minCutoffPosition.ToString("F2") + "  |  " + "POS beta: " + betaPosition.ToString("F2")
+        m_debugText.text = m_euroAdjustment
+            ? "POS mincutoff: " + m_minCutoffPosition.ToString("F2") + "  |  " + "POS beta: " + m_betaPosition.ToString("F2")
                             + "\n" +
-                         "ROT mincutoff: " + minCutoffRotation.ToString("F2") + "  |  " + "ROT beta: " + betaRotation.ToString("F2");
-        }
-        else
-        {
-            debugText.text = "X offset: " + adjustmentOffset.x.ToString("F5") + "  |  " + "Y offset: " + adjustmentOffset.y.ToString("F5") + "  |  " + "Z offset: " + adjustmentOffset.z.ToString("F5");
-        }
+                         "ROT mincutoff: " + m_minCutoffRotation.ToString("F2") + "  |  " + "ROT beta: " + m_betaRotation.ToString("F2")
+            : "X offset: " + m_adjustmentOffset.x.ToString("F5") + "  |  " + "Y offset: " + m_adjustmentOffset.y.ToString("F5") + "  |  " + "Z offset: " + m_adjustmentOffset.z.ToString("F5");
     }
-
-    private void ConnectToServer()
-    {
-        try
-        {
-            client = new TcpClient(serverIP, serverPort);
-            client.NoDelay = true; // Disable Nagle's algorithm for lower latency
-            stream = client.GetStream();
-
-            Debug.Log("Connected to server at " + serverIP + ":" + serverPort);
-
-            clientReceiveThread = new Thread(new ThreadStart(ListenForData));
-            clientReceiveThread.IsBackground = true;
-            clientReceiveThread.Start();
-
-            clientSendThread = new Thread(new ThreadStart(NetworkSenderLoop));
-            clientSendThread.IsBackground = true;
-            clientSendThread.Start();
-        }
-        catch (SocketException e)
-        {
-            Debug.Log("SocketException: " + e.ToString());
-        }
-    }
-
-    void OnApplicationQuit()
-    {
-        if (stream != null)
-            stream.Close();
-        if (client != null)
-            client.Close();
-        if (clientReceiveThread != null)
-            clientReceiveThread.Abort();
-        if (clientSendThread != null)
-            clientSendThread.Abort();
-    }
-
-    private void LateUpdate()
-    {
-        // Check for new data in the thread-safe queue every frame
-        CornerData dataToProcess = null;
-
-        lock (receivedDataQueue)
-        {
-            // Dequeue oldest element in queue for processing
-            if (receivedDataQueue.Count > 0)
-            {
-                dataToProcess = receivedDataQueue.Dequeue();
-            }
-        }
-
-        if (dataToProcess != null)
-        {
-            Debug.Log("Server message received: " + JsonConvert.SerializeObject(dataToProcess));
-
-            // 1. Convert OpenCV (RHS) to Unity (LHS)
-            Vector3 worldPos = new Vector3(dataToProcess.tvec[0], -dataToProcess.tvec[1], dataToProcess.tvec[2]);
-
-            Vector3 rotAxis = new Vector3(dataToProcess.rvec[0], dataToProcess.rvec[1], dataToProcess.rvec[2]);
-            float angle = rotAxis.magnitude;
-            Vector3 axis = rotAxis.normalized;
-            Quaternion worldRot = Quaternion.AngleAxis(-angle * Mathf.Rad2Deg, new Vector3(axis.x, -axis.y, axis.z));
-
-            bool isSecure = dataToProcess.grasped;
-
-            InteractiveCube.transform.position = worldPos;
-            InteractiveCube.transform.rotation = worldRot;
-
-            InteractiveCube.GetComponent<Renderer>().material = isSecure ? secureMaterial : defaultMaterial;
-        }
-    }
-
-    public void ListenForData()
-    {
-        // Use a StringBuilder to buffer incoming TCP bytes
-        System.Text.StringBuilder jsonBuffer = new System.Text.StringBuilder();
-
-        try
-        {
-            byte[] bytes = new byte[1024];
-            while (true)
-            {
-                // Use Thread.Sleep to prevent 100% CPU usage when idle
-                if (!stream.DataAvailable)
-                {
-                    Thread.Sleep(5);
-                    continue;
-                }
-
-                int length = stream.Read(bytes, 0, bytes.Length);
-
-                // Check for connection closure
-                if (length == 0) break;
-
-                // 1. Append the new incoming chunk to the buffer
-                string incomingChunk = Encoding.UTF8.GetString(bytes, 0, length);
-                jsonBuffer.Append(incomingChunk);
-
-                // 2. Process complete messages from the buffer
-                while (true)
-                {
-                    string bufferContent = jsonBuffer.ToString();
-
-                    // Find the index of the newline delimiter ('\n')
-                    int newlineIndex = bufferContent.IndexOf('\n');
-
-                    // If complete message found
-                    if (newlineIndex >= 0)
-                    {
-                        // A complete message found! Extract it.
-                        string completeMessage = bufferContent.Substring(0, newlineIndex).Trim();
-
-                        // Remove the processed message AND the delimiter from the buffer
-                        jsonBuffer.Remove(0, newlineIndex + 1);
-
-                        if (!string.IsNullOrEmpty(completeMessage))
-                        {
-                            try
-                            {
-                                if (completeMessage == "HANDSHAKE_OK")
-                                {
-                                    handshakeCompleted = true;
-                                    Debug.Log("Handshake with server completed.");
-                                    continue;
-                                }
-
-                                // 3. Deserialize the single, complete message (SAFE in background thread)
-                                CornerData tag = JsonConvert.DeserializeObject<CornerData>(completeMessage);
-
-                                // 4. Enqueue the data for the main thread to handle (THREAD-SAFE)
-                                lock (receivedDataQueue)
-                                {
-                                    while (receivedDataQueue.Count > 1)
-                                        receivedDataQueue.Dequeue(); // discard stale, keep only freshest
-                                    receivedDataQueue.Enqueue(tag);
-                                }
-                            }
-                            catch (JsonReaderException)
-                            {
-                                // Silently ignore corrupted data or log a warning if necessary
-                            }
-                        }
-                    }
-                    else
-                    {
-                        // No more complete messages in the buffer. Wait for more data.
-                        break;
-                    }
-                }
-            }
-        }
-        catch (SocketException e)
-        {
-            // Must use Debug.Log on the Main Thread for safety, but for minimal change,
-            // we leave this risky line here. A crash could occur if this is called during cleanup.
-            Debug.Log("SocketException: " + e);
-        }
-        catch (Exception e)
-        {
-            Debug.Log("ListenForData thread error: " + e);
-        }
-    }
-
-    public void SendMessageToServer(byte[] image)
-    {
-        try
-        {
-            if (stream != null && client != null && client.Connected)
-            {
-                // 1. Send the length of the JPEG data (as a 4-byte integer)
-                int dataLength = image.Length;
-                byte[] lengthPrefix = BitConverter.GetBytes(dataLength);
-
-                // Ensure consistent endianness (e.g., use Big-Endian across client/server)
-                if (BitConverter.IsLittleEndian)
-                    System.Array.Reverse(lengthPrefix);
-
-                stream.Write(lengthPrefix, 0, lengthPrefix.Length);
-
-                // 2. Send the actual JPEG data bytes
-                stream.Write(image, 0, dataLength);
-            }
-        }
-        catch (Exception e)
-        {
-            Debug.LogError("Failed to send message: " + e.Message);
-        }
-    }
-
-    // Send debug message
-    //public void SendMessageToServer()
-    //{
-    //    try
-    //    {
-    //        if (stream != null && client != null && client.Connected)
-    //        {
-    //            string message = "hello";
-    //            byte[] messageBytes = Encoding.UTF8.GetBytes(message);
-    //            stream.Write(messageBytes, 0, messageBytes.Length);
-    //        }
-    //    }
-    //    catch (Exception e)
-    //    {
-    //        Debug.LogError("Failed to send message: " + e.Message);
-    //    }
-    //}
 }
