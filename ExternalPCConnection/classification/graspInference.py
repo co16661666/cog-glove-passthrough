@@ -77,3 +77,6 @@ class GraspInference(threading.Thread):
             return True
         else:
             return False
+        
+    def stop(self):
+        self.running = False
