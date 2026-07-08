@@ -28,10 +28,10 @@ public class TcpDataClient : MonoBehaviour
     [SerializeField] private string m_host = "127.0.0.1";
     [SerializeField] private int m_port = 65432;
     [SerializeField] private PassthroughCameraAccess m_cameraAccess;
-    [DebugMember(Tweakable = true, Category = "Adjustment", Min = -0.5f, Max = 0.5f)] public float HandOffsetX;
-    [DebugMember(Tweakable = true, Category = "Adjustment", Min = -0.5f, Max = 0.5f)] public float HandOffsetY;
-    [DebugMember(Tweakable = true, Category = "Adjustment", Min = -0.5f, Max = 0.5f)] public float HandOffsetZ;
-    private Vector3 m_handOffset;
+    [DebugMember(Tweakable = true, Category = "Adjustment", Min = -0.5f, Max = 0.5f)] public float LeapOffsetX;
+    [DebugMember(Tweakable = true, Category = "Adjustment", Min = -0.5f, Max = 0.5f)] public float LeapOffsetY;
+    [DebugMember(Tweakable = true, Category = "Adjustment", Min = -0.5f, Max = 0.5f)] public float LeapOffsetZ;
+    private Vector3 m_leapOffset;
     private TcpClient m_tcpClient;
     private NetworkStream m_stream;
     private Thread m_receiveThread;
@@ -41,6 +41,8 @@ public class TcpDataClient : MonoBehaviour
     public HandTrackingFrame LatestHandFrame { get; private set; }
     public static event Action<HandTrackingFrame> OnHandFrameReceived;
     public bool Grasped = false;
+    private Pose m_cachedCameraPose;
+    private readonly object m_poseLock = new object();
 
     private void Start()
     {
@@ -61,6 +63,10 @@ public class TcpDataClient : MonoBehaviour
                 // Fire the event for any listening scripts
                 OnHandFrameReceived?.Invoke(frame);
             }
+        }
+        lock (m_poseLock)
+        {
+            m_cachedCameraPose = m_cameraAccess.GetCameraPose();
         }
     }
 
@@ -163,8 +169,15 @@ public class TcpDataClient : MonoBehaviour
                         {
                             // Each hand block is exactly 64 floats long, starting after the initial count float
                             int startIndex = 1 + i * 64;
-                            m_handOffset = new Vector3(HandOffsetX, HandOffsetY, HandOffsetZ);
-                            frame.hands[i] = HandLandmarks.Parse(receivedFloats, startIndex, m_cameraAccess.GetCameraPose(), m_handOffset);
+                            m_leapOffset = new Vector3(LeapOffsetX, LeapOffsetY, LeapOffsetZ);
+
+                            Pose currentPose;
+                            lock (m_poseLock)
+                            {
+                                currentPose = m_cachedCameraPose;
+                            }
+
+                            frame.hands[i] = HandLandmarks.Parse(receivedFloats, startIndex, currentPose, m_leapOffset);
                         }
                     }
                     else

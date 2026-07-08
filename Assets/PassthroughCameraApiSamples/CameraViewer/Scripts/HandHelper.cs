@@ -51,9 +51,8 @@ public struct HandLandmarks
         {
             // Vector3 v = new Vector3(-data[idx] / 1000f, -data[idx + 2] / 1000f, data[idx + 1] / 1000); // Convert units and coordinates (m -> mm, -z)
             Vector3 v = new Vector3(-data[idx] / 1000f, -data[idx + 2] / 1000f, data[idx + 1] / 1000); // Convert units (m -> mm), coordinate change (Leap -> Unity)
-            v += offset;
             idx += 3;
-            return (cameraPose.rotation * v) + cameraPose.position;
+            return (cameraPose.rotation * v) + (cameraPose.position + offset);
         }
 
         hand.wrist    = GetV3();
