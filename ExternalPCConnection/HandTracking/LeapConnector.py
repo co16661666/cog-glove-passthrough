@@ -1,7 +1,9 @@
 import leap
 import threading
 import time
-
+import queue
+import numpy as np
+from datetime import datetime
 
 # ---------------------------------------------------------------------------
 # MediaPipe-style landmark indices (for reference)
@@ -90,6 +92,13 @@ class LeapTrackingThread(threading.Thread):
         self.latest_hands_data: list[dict] = []
         self.frame_id = 0
 
+        self.data_queue = queue.Queue()
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.output_filepath = f"leap_data_{timestamp}.bin"
+
+        self.writer_thread = threading.Thread(target=self._disk_writer_worker, daemon=True)
+        self.writer_thread.start()
+
     class MyListener(leap.Listener):
         def __init__(self, outer_thread):
             super().__init__()
@@ -107,6 +116,7 @@ class LeapTrackingThread(threading.Thread):
             print(f"[Leap] Found device {info.serial}")
 
         def on_tracking_event(self, event):
+            timestamp = event.tracking_frame_id
             current_hands = []
 
             for hand in event.hands:
@@ -128,8 +138,40 @@ class LeapTrackingThread(threading.Thread):
                     "keypoints_list": keypoints_list
                 })
 
+                flat_row = [float(timestamp), float(hand.id), 0.0 if hand_type == "left" else 1.0]
+                for xyz in keypoints_list:
+                    flat_row.extend(xyz)
+                self.outer.data_queue.put(flat_row)
+
             self.outer.latest_hands_data = current_hands
             self.outer.frame_id += 1
+
+    def _disk_writer_worker(self):
+        """Dedicated thread to handle binary file serialization safely."""
+        all_records = []
+        batch_size = 120  # Flush roughly every 1 second at 120Hz
+        
+        while self.running or not self.data_queue.empty():
+            try:
+                record = self.data_queue.get(timeout=0.5)
+                all_records.append(record)
+                self.data_queue.task_done()
+                
+                if len(all_records) >= batch_size:
+                    self._flush_to_disk(all_records)
+                    all_records.clear()
+            except queue.Empty:
+                continue
+                
+        if all_records:
+            self._flush_to_disk(all_records)
+
+    def _flush_to_disk(self, records):
+        """Appends rows to binary file instantly with zero string parsing overhead."""
+        # Convert batch to a continuous float64 block
+        arr = np.array(records, dtype=np.float64)
+        with open(self.output_filepath, "ab") as f:
+            arr.tofile(f)
 
     def run(self):
         print("[Leap] Thread started.")
