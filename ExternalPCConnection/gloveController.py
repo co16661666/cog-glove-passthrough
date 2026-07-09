@@ -14,7 +14,7 @@ from PyQt6.QtCore import QTimer, Qt
 import pyqtgraph as pg
 
 # --- Constants & Formats ---
-COM_PORT = 'COM3'  # <-- CHANGE THIS TO YOUR TEENSY PORT
+COM_PORT = 'COM16'  # <-- CHANGE THIS TO YOUR TEENSY PORT
 BAUD_RATE = 115200
 
 # Struct formats based on __attribute__((__packed__)) C++ structs
