@@ -451,7 +451,7 @@ if __name__ == "__main__":
     log_thread.start()
     inf_thread.start()
 
-    tcp_thread = TcpServer("127.0.0.1", 65432)
+    tcp_thread = TcpServer("127.0.0.1", 65432, dm)
     tcp_thread.start()
 
     window = MainWindow(ser_thread)

@@ -57,16 +57,18 @@ except Exception as e:
     print(f"Hand tracking initialization error: {e}")
 
 class HandDataManager(threading.Thread):
-    def __init__(self, shutdown_event):
+    def __init__(self, shutdown_event, dm):
         super().__init__()
         self.latest_grasp_index = 0
         self.latest_hand_index = 0
         self.shutdown_event = shutdown_event
+        self.dm = dm
         self.daemon = True
 
     def run(self):
         global latest_timestamp
         print(f"Data manager started")
+        self.dm.log_event(f"Data manager started", is_error=False)
         while not self.shutdown_event.is_set():
             if use_inference and predictor is not None:
                 if self.latest_grasp_index < predictor.frame_id:
@@ -78,11 +80,12 @@ class HandDataManager(threading.Thread):
                 if self.latest_hand_index < leap_thread.get_latest_frame_id():
                     self.latest_hand_index = leap_thread.get_latest_frame_id()
                     safe_put((latest_timestamp, leap_thread.get_latest_hands_flattened()))
+                    self.dm.broadcast_hp((latest_timestamp, leap_thread.get_latest_hands()))
 
             time.sleep(0.006)
 
 class TCPReceiverThread(threading.Thread):
-    def __init__(self, client_socket, addr, shutdown_event):
+    def __init__(self, client_socket, addr, shutdown_event, dm):
         super().__init__()
         self.client_socket = client_socket
         self.addr = addr
@@ -90,11 +93,13 @@ class TCPReceiverThread(threading.Thread):
         self.header_format = "<Qi" 
         self.header_size = struct.calcsize(self.header_format)
         self.shutdown_event = shutdown_event
+        self.dm = dm
         self.daemon = True
 
     def run(self):
         global latest_timestamp
         print(f"Receiver started for {self.addr}")
+        self.dm.log_event(f"Receiver started for {self.addr}", is_error=False)
         while not self.shutdown_event.is_set():
             try:
                 # 1. Read the complete header block
@@ -104,6 +109,7 @@ class TCPReceiverThread(threading.Thread):
                         remaining = self.client_socket.recv(self.header_size - len(header_bytes))
                         if not remaining:
                             print("Connection closed by client during header reception")
+                            self.dm.log_event(f"Connection closed by client during header reception", is_error=True)
                             return
                         header_bytes += remaining
                     except socket.timeout:
@@ -124,6 +130,7 @@ class TCPReceiverThread(threading.Thread):
                         remaining = self.client_socket.recv(payload_size - len(payload_bytes))
                         if not remaining:
                             print("Connection closed by client during payload reception")
+                            self.dm.log_event(f"Connection closed by client during header reception", is_error=True)
                             return
                         payload_bytes += remaining
                     except socket.timeout:
@@ -134,6 +141,8 @@ class TCPReceiverThread(threading.Thread):
                 # Unpack the package of bits back into a native float list
                 float_format = f"<{float_count}f"
                 received_floats = list(struct.unpack(float_format, payload_bytes))
+                if len(received_floats) == 6:
+                    self.dm.broadcast_cube((timestamp, received_floats))
 
             except (ConnectionResetError, BrokenPipeError):
                 print("Client disconnected.")
@@ -146,12 +155,13 @@ class TCPReceiverThread(threading.Thread):
         print(f"Receiver for {self.addr} closing.")
 
 class TCPSenderThread(threading.Thread):
-    def __init__(self, client_socket, addr, shutdown_event):
+    def __init__(self, client_socket, addr, shutdown_event, dm):
         super().__init__()
         self.client_socket = client_socket
         self.client_socket.settimeout(0.1)
         self.addr = addr
         self.shutdown_event = shutdown_event
+        self.dm = dm
         self.daemon = True
 
     def run(self):
@@ -160,6 +170,7 @@ class TCPSenderThread(threading.Thread):
         Expects data in the queue to be a tuple or list: (timestamp, [float_1, float_2, ...])
         """
         print(f"Sender started for {self.addr}")
+        self.dm.log_event(f"Sender started for {self.addr}", is_error=False)
         while not self.shutdown_event.is_set():
             try:
                 # Blocks until an item is available in the queue
@@ -192,7 +203,7 @@ class TCPSenderThread(threading.Thread):
         print(f"Sender for {self.addr} closing.")
 
 class TcpServer(threading.Thread):
-    def __init__(self, host, port):
+    def __init__(self, host, port, dm):
         super().__init__()
         # Create a socket object
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -201,6 +212,9 @@ class TcpServer(threading.Thread):
         # Get local machine name
         self.host = host # "127.0.0.1"
         self.port = port # 65432
+
+        # Data manager
+        self.dm = dm
 
         # Bind the socket to a public host and port
         self.server_socket.bind((host, port))
@@ -224,14 +238,14 @@ class TcpServer(threading.Thread):
         # client_socket.send(b'Server says connected') # interferes with corner processing in Unity
 
         # 1. Start the Receiver thread
-        rx_thread = TCPReceiverThread(client_socket, addr, shutdown_event)
+        rx_thread = TCPReceiverThread(client_socket, addr, shutdown_event, self.dm)
         rx_thread.start()
 
         # 2. Start the Sender thread
-        tx_thread = TCPSenderThread(client_socket, addr, shutdown_event)
+        tx_thread = TCPSenderThread(client_socket, addr, shutdown_event, self.dm)
         tx_thread.start()
 
-        dm_thread = HandDataManager(shutdown_event)
+        dm_thread = HandDataManager(shutdown_event, self.dm)
         dm_thread.start()
 
         while self.running:
@@ -269,7 +283,8 @@ class TcpServer(threading.Thread):
             self.server_socket.close()
 
 if __name__ == '__main__':
-    server = TcpServer("127.0.0.1", 65432)
+    dm = DataManager()
+    server = TcpServer("127.0.0.1", 65432, dm)
     try:
         server.run()
     except KeyboardInterrupt:

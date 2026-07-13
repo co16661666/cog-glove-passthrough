@@ -37,6 +37,14 @@ class DataManager:
     def broadcast_calib(self, data):
         self.subscribers['gui_calib'].put(data)
 
+    def broadcast_hp(self, data):
+        self.subscribers['gui_hp'].put(data)
+        self.subscribers['inf_hp'].put(data)
+
+    def broadcast_cube(self, data):
+        self.subscribers['gui_cube'].put(data)
+        self.subscribers['inf_cube'].put(data)
+
     def log_event(self, msg, is_error=False):
         """Sends logs and error flags to the GUI."""
         self.subscribers['gui_log'].put((time.time(), msg, is_error))
