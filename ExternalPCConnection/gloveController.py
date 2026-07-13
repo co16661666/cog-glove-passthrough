@@ -13,6 +13,8 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PyQt6.QtCore import QTimer, Qt
 import pyqtgraph as pg
 
+from TcpServer import TcpServer
+
 # --- Constants & Formats ---
 COM_PORT = 'COM16'  # <-- CHANGE THIS TO YOUR TEENSY PORT
 BAUD_RATE = 115200
@@ -480,10 +482,15 @@ if __name__ == "__main__":
     log_thread.start()
     inf_thread.start()
 
+    tcp_thread = TcpServer("127.0.0.1", 65432)
+    tcp_thread.start()
+
     window = MainWindow(ser_thread)
     window.show()
     
     app.exec()
+
+    tcp_thread.running = False
     
     log_thread.save_and_stop()
     inf_thread.stop()
