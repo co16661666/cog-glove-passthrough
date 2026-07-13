@@ -225,6 +225,8 @@ public class ImageStreamer : MonoBehaviour
 
             bool isSecure = dataToProcess.grasped != 0;
 
+            LatestCVPose = dataToProcess;
+
             m_interactiveCube.transform.position = worldPos;
             m_interactiveCube.transform.rotation = worldRot;
 
