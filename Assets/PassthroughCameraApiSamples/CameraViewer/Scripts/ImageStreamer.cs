@@ -80,6 +80,8 @@ public class ImageStreamer : MonoBehaviour
     }
 
     public CVPose LatestCVPose { get; private set; } // Expose for TCP client send
+    public delegate void PoseUpdateHandler(CVPose pose);
+    public event PoseUpdateHandler OnPoseUpdated; // Pose update event
 
     [StructLayout(LayoutKind.Sequential)]
     private struct CameraPose
@@ -226,6 +228,7 @@ public class ImageStreamer : MonoBehaviour
             bool isSecure = dataToProcess.grasped != 0;
 
             LatestCVPose = dataToProcess;
+            OnPoseUpdated?.Invoke(dataToProcess);
 
             m_interactiveCube.transform.position = worldPos;
             m_interactiveCube.transform.rotation = worldRot;
