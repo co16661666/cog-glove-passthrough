@@ -69,7 +69,7 @@ public class ImageStreamer : MonoBehaviour
     private long m_lastCameraTimestamp = 0;
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct CVPose
+    public struct CVPose
     {
         public float tx, ty, tz;
         public float rx, ry, rz;
@@ -78,6 +78,8 @@ public class ImageStreamer : MonoBehaviour
         public int poseSuccess;
         public ulong timestamp;
     }
+
+    public CVPose LatestCVPose { get; private set; } // Expose for TCP client send
 
     [StructLayout(LayoutKind.Sequential)]
     private struct CameraPose
