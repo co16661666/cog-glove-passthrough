@@ -1,0 +1,3 @@
+[submodule "ExternalPCConnection/HandTracking/leapc-python-bindings"]
+	path = ExternalPCConnection/HandTracking/leapc-python-bindings
+	url = https://github.com/ultraleap/leapc-python-bindings.git
