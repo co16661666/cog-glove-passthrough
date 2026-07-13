@@ -12,6 +12,8 @@ import time
 import csv
 from datetime import datetime
 
+from DataManager import DataManager
+
 latest_timestamp = 0
 running = True
 

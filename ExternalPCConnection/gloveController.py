@@ -14,6 +14,7 @@ from PyQt6.QtCore import QTimer, Qt
 import pyqtgraph as pg
 
 from TcpServer import TcpServer
+from DataManager import DataManager
 
 # --- Constants & Formats ---
 COM_PORT = 'COM16'  # <-- CHANGE THIS TO YOUR TEENSY PORT
@@ -38,38 +39,6 @@ PACKET_CALIB = 2
 CMD_DEBUG = b'\x00'
 CMD_CALIB = b'\x01'
 CMD_STREAM = b'\x02'
-
-
-# --- Data Management (Pub/Sub Queues) ---
-class DataManager:
-    """Manages routing of parsed serial data to different consumers."""
-    def __init__(self):
-        self.subscribers = {
-            'gui_imu': queue.Queue(),
-            'gui_ff': queue.Queue(),
-            'gui_calib': queue.Queue(),
-            'gui_log': queue.Queue(), # For errors and text logs
-            'log_imu': queue.Queue(),
-            'log_ff': queue.Queue(),
-            'inf_ff': queue.Queue()
-        }
-
-    def broadcast_imu(self, data):
-        self.subscribers['gui_imu'].put(data)
-        self.subscribers['log_imu'].put(data)
-
-    def broadcast_ff(self, data):
-        self.subscribers['gui_ff'].put(data)
-        self.subscribers['log_ff'].put(data)
-        self.subscribers['inf_ff'].put(data)
-        
-    def broadcast_calib(self, data):
-        self.subscribers['gui_calib'].put(data)
-
-    def log_event(self, msg, is_error=False):
-        """Sends logs and error flags to the GUI."""
-        self.subscribers['gui_log'].put((time.time(), msg, is_error))
-
 
 # --- Serial Reader Thread ---
 class SerialThread(threading.Thread):
