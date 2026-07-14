@@ -7,10 +7,11 @@ from datetime import datetime
 import numpy as np
 import serial
 
-from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QCheckBox,
                              QTabWidget, QToolBar, QPushButton, QSlider, QLabel, 
                              QHBoxLayout, QTextEdit, QStatusBar, QGridLayout, QGroupBox)
 from PyQt6.QtCore import QTimer, Qt
+import pyqtgraph.opengl as gl          # for 3D plots
 import pyqtgraph as pg
 
 from TcpServer import TcpServer
@@ -173,8 +174,8 @@ class GraspInferenceThread(threading.Thread):
     FORCE_THUMB_THRESHOLD       = 50
     FORCE_PINCH_THRESHOLD       = 80     # index + middle summed
     FLEX_BENT_THRESHOLD         = 500
-    CUBE_PROXIMITY_THRESHOLD    = 30.0   # same length units as cube pose / leap coords
-    FINGER_PROXIMITY_THRESHOLD  = 25.0
+    CUBE_PROXIMITY_THRESHOLD    = 0.05   # same length units as cube pose / leap coords
+    FINGER_PROXIMITY_THRESHOLD  = 0.05
 
     # ff payload column layout: ["Thumb","Index","Middle","Ring","Pinky"]
     FORCE_THUMB, FORCE_INDEX, FORCE_MIDDLE = 0, 1, 2
@@ -292,6 +293,135 @@ class GraspInferenceThread(threading.Thread):
     def stop(self):
         self.running = False
 
+# --- 3D Plotting ---
+class HandCubeTab(QWidget):
+    """3D viewer for hand landmarks and the tracked cube, with visibility toggles."""
+
+    # Standard 21-point hand landmark indices (per LANDMARK_NAMES in LeapConnector.py)
+    FINGERTIP_INDICES = [4, 8, 12, 16, 20]  # thumb, index, middle, ring, pinky tips
+    CUBE_HALF_EXTENT = 0.02  # meters
+
+    def __init__(self, data_manager, parent=None):
+        super().__init__(parent)
+        self.dm = data_manager
+        self.show_fingertips_only = False
+        self.show_cube = True
+        self.show_hand = True
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+
+        controls = QHBoxLayout()
+        self.chk_show_hand = QCheckBox("Show Hand")
+        self.chk_show_hand.setChecked(True)
+        self.chk_show_hand.stateChanged.connect(self._on_hand_toggle)
+        controls.addWidget(self.chk_show_hand)
+
+        self.chk_fingertips_only = QCheckBox("Fingertips Only")
+        self.chk_fingertips_only.stateChanged.connect(self._on_fingertips_toggle)
+        controls.addWidget(self.chk_fingertips_only)
+
+        self.chk_show_cube = QCheckBox("Show Cube")
+        self.chk_show_cube.setChecked(True)
+        self.chk_show_cube.stateChanged.connect(self._on_cube_toggle)
+        controls.addWidget(self.chk_show_cube)
+
+        controls.addStretch()
+        layout.addLayout(controls)
+
+        self.view = gl.GLViewWidget()
+        self.view.setCameraPosition(distance=0.5)
+        grid = gl.GLGridItem()
+        grid.setSize(1, 1)
+        grid.setSpacing(0.05, 0.05)
+        self.view.addItem(grid)
+        layout.addWidget(self.view)
+
+        self.hand_scatter = gl.GLScatterPlotItem(pos=np.zeros((1, 3)), color=(0.2, 0.8, 1.0, 1.0), size=8)
+        self.view.addItem(self.hand_scatter)
+
+        # 12 edges of the cube, drawn as a wireframe via GLLinePlotItem(mode='lines')
+        self.cube_lines = gl.GLLinePlotItem(pos=np.zeros((2, 3)), color=(1.0, 0.4, 0.1, 1.0), width=2, mode='lines')
+        self.view.addItem(self.cube_lines)
+
+    def _on_hand_toggle(self, state):
+        self.show_hand = bool(state)
+        self.hand_scatter.setVisible(self.show_hand)
+
+    def _on_fingertips_toggle(self, state):
+        self.show_fingertips_only = bool(state)
+
+    def _on_cube_toggle(self, state):
+        self.show_cube = bool(state)
+        self.cube_lines.setVisible(self.show_cube)
+
+    @staticmethod
+    def _transform_point(raw_xyz):
+        # Same convention as GraspInferenceThread: [-x/1000, -z/1000, y/1000]
+        x, y, z = raw_xyz
+        return (-x / 1000.0, -z / 1000.0, y / 1000.0)
+
+    @staticmethod
+    def _cube_corners(tx, ty, tz, rx, ry, rz, half_extent):
+        cx, cy, cz = np.cos([rx, ry, rz])
+        sx, sy, sz = np.sin([rx, ry, rz])
+        Rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]])
+        Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
+        Rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]])
+        R = Rz @ Ry @ Rx
+
+        h = half_extent
+        local_corners = np.array([
+            [-h, -h, -h], [h, -h, -h], [h, h, -h], [-h, h, -h],
+            [-h, -h, h], [h, -h, h], [h, h, h], [-h, h, h],
+        ])
+        return (R @ local_corners.T).T + np.array([tx, ty, tz])
+
+    @staticmethod
+    def _cube_edges(corners):
+        edge_idx = [
+            (0, 1), (1, 2), (2, 3), (3, 0),  # bottom face
+            (4, 5), (5, 6), (6, 7), (7, 4),  # top face
+            (0, 4), (1, 5), (2, 6), (3, 7),  # verticals
+        ]
+        pts = []
+        for i, j in edge_idx:
+            pts.append(corners[i])
+            pts.append(corners[j])
+        return np.array(pts)
+
+    def update_view(self):
+        # --- Hand points ---
+        hp_queue = self.dm.subscribers['gui_hp']
+        latest_hands = None
+        while not hp_queue.empty():
+            _, hands = hp_queue.get()
+            latest_hands = hands
+
+        if latest_hands is not None and self.show_hand:
+            pts = []
+            for hand in latest_hands:
+                kp = hand.get("keypoints_list")
+                if not kp:
+                    continue
+                indices = self.FINGERTIP_INDICES if self.show_fingertips_only else range(len(kp))
+                for idx in indices:
+                    if idx < len(kp):
+                        pts.append(self._transform_point(kp[idx]))
+            if pts:
+                self.hand_scatter.setData(pos=np.array(pts))
+
+        # --- Cube ---
+        cube_queue = self.dm.subscribers['gui_cube']
+        latest_cube = None
+        while not cube_queue.empty():
+            _, *cube = cube_queue.get()
+            latest_cube = cube
+
+        if latest_cube is not None and self.show_cube:
+            corners = self._cube_corners(*latest_cube, self.CUBE_HALF_EXTENT) # type: ignore
+            self.cube_lines.setData(pos=self._cube_edges(corners))
 
 # --- Main PyQt6 GUI ---
 class MainWindow(QMainWindow):
@@ -356,6 +486,7 @@ class MainWindow(QMainWindow):
         self.setup_flex_tab()
         self.setup_force_tab()
         self.setup_imu_tab()
+        self.setup_hand_cube_tab()
         self.setup_motor_tab()
         self.setup_debug_tab()
 
@@ -391,6 +522,10 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.accel_plot)
         layout.addWidget(self.quat_plot)
         self.tabs.addTab(tab, "IMU Data")
+    
+    def setup_hand_cube_tab(self):
+        self.hand_cube_tab = HandCubeTab(self.dm)
+        self.tabs.addTab(self.hand_cube_tab, "Hand & Cube")
 
     def setup_motor_tab(self):
         tab = QWidget()
@@ -550,6 +685,9 @@ class MainWindow(QMainWindow):
                 self.set_indicator(self.ind_imu, True)
         elif curr_time - self.last_imu_time > 2.0:
             self.set_indicator(self.ind_imu, False, "NO DATA")
+
+        # --- Handle 3D Plot ---
+        self.hand_cube_tab.update_view()
 
 
     def closeEvent(self, event): # type: ignore
