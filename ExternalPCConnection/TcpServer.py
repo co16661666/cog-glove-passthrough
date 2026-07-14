@@ -152,7 +152,8 @@ class TCPReceiverThread(threading.Thread):
                 if len(received_floats) == 6:
                     self.dm.broadcast_cube((timestamp, received_floats))
                 elif (len(received_floats) - 1) % 64 == 0: # 0 hands (1 float), 1 hands (65 floats), 2 hands (129 floats)
-                    self.dm.broadcast_hp((timestamp, received_floats))
+                    if leap_thread is not None:
+                        self.dm.broadcast_hp((timestamp, leap_thread.reconstruct_hands_from_flattened(received_floats)))
 
             except (ConnectionResetError, BrokenPipeError):
                 print("Client disconnected.")
