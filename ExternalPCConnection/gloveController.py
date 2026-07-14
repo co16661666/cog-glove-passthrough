@@ -41,6 +41,13 @@ CMD_DEBUG = b'\x00'
 CMD_CALIB = b'\x01'
 CMD_STREAM = b'\x02'
 
+# --- Tunable thresholds (raw sensor units unless noted) ----------------
+FORCE_THUMB_THRESHOLD       = 50
+FORCE_PINCH_THRESHOLD       = 80     # index + middle summed
+FLEX_BENT_THRESHOLD         = 500
+CUBE_PROXIMITY_THRESHOLD    = 0.05   # meters
+FINGER_PROXIMITY_THRESHOLD  = 0.05
+
 # --- Serial Reader Thread ---
 class SerialThread(threading.Thread):
     def __init__(self, port, baud, data_manager):
@@ -170,13 +177,6 @@ class GraspInferenceThread(threading.Thread):
       3. Flex   - thumb/index/middle flex sensors read as "bent".
     """
 
-    # --- Tunable thresholds (raw sensor units unless noted) ----------------
-    FORCE_THUMB_THRESHOLD       = 50
-    FORCE_PINCH_THRESHOLD       = 80     # index + middle summed
-    FLEX_BENT_THRESHOLD         = 500
-    CUBE_PROXIMITY_THRESHOLD    = 0.05   # same length units as cube pose / leap coords
-    FINGER_PROXIMITY_THRESHOLD  = 0.05
-
     # ff payload column layout: ["Thumb","Index","Middle","Ring","Pinky"]
     FORCE_THUMB, FORCE_INDEX, FORCE_MIDDLE = 0, 1, 2
     FLEX_THUMB, FLEX_INDEX, FLEX_MIDDLE = 5, 6, 7
@@ -265,27 +265,27 @@ class GraspInferenceThread(threading.Thread):
         # 1. Force
         thumb_force = self.latest_force[self.FORCE_THUMB]
         pinch_force = self.latest_force[self.FORCE_INDEX] + self.latest_force[self.FORCE_MIDDLE]
-        force_ok = (thumb_force > self.FORCE_THUMB_THRESHOLD and
-                    pinch_force > self.FORCE_PINCH_THRESHOLD)
+        force_ok = (thumb_force > FORCE_THUMB_THRESHOLD and
+                    pinch_force > FORCE_PINCH_THRESHOLD)
 
         # 2. Proximity
         cube_pos = np.array(self.latest_cube[:3])
         cube_dist_ok = all(
-            np.linalg.norm(tip - cube_pos) < self.CUBE_PROXIMITY_THRESHOLD
+            np.linalg.norm(tip - cube_pos) < CUBE_PROXIMITY_THRESHOLD
             for tip in (thumb_tip, index_tip, middle_tip)
         )
         finger_dist_ok = (
-            np.linalg.norm(thumb_tip - index_tip) < self.FINGER_PROXIMITY_THRESHOLD and
-            np.linalg.norm(thumb_tip - middle_tip) < self.FINGER_PROXIMITY_THRESHOLD and
-            np.linalg.norm(index_tip - middle_tip) < self.FINGER_PROXIMITY_THRESHOLD
+            np.linalg.norm(thumb_tip - index_tip) < FINGER_PROXIMITY_THRESHOLD and
+            np.linalg.norm(thumb_tip - middle_tip) < FINGER_PROXIMITY_THRESHOLD and
+            np.linalg.norm(index_tip - middle_tip) < FINGER_PROXIMITY_THRESHOLD
         )
         proximity_ok = cube_dist_ok and finger_dist_ok
 
         # 3. Flex
         flex_ok = (
-            self.latest_force[self.FLEX_THUMB] > self.FLEX_BENT_THRESHOLD and
-            self.latest_force[self.FLEX_INDEX] > self.FLEX_BENT_THRESHOLD and
-            self.latest_force[self.FLEX_MIDDLE] > self.FLEX_BENT_THRESHOLD
+            self.latest_force[self.FLEX_THUMB] > FLEX_BENT_THRESHOLD and
+            self.latest_force[self.FLEX_INDEX] > FLEX_BENT_THRESHOLD and
+            self.latest_force[self.FLEX_MIDDLE] > FLEX_BENT_THRESHOLD
         )
 
         return bool(force_ok and proximity_ok and flex_ok)
