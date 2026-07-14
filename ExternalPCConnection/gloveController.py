@@ -158,17 +158,131 @@ class LoggerThread(threading.Thread):
 
 # --- Mock Inference Thread Example ---
 class GraspInferenceThread(threading.Thread):
+    """
+    Rule-based grasp detector. A grasp is flagged only when all three
+    signals agree for the current frame:
+      1. Force  - thumb fingertip force exceeds its own threshold AND
+                  (index + middle) fingertip force, summed, exceeds a
+                  pinch threshold.
+      2. Proximity - thumb/index/middle fingertips are each close to the
+                     cube AND close to one another (tripod pinch geometry).
+      3. Flex   - thumb/index/middle flex sensors read as "bent".
+    """
+
+    # --- Tunable thresholds (raw sensor units unless noted) ----------------
+    FORCE_THUMB_THRESHOLD       = 50
+    FORCE_PINCH_THRESHOLD       = 80     # index + middle summed
+    FLEX_BENT_THRESHOLD         = 500
+    CUBE_PROXIMITY_THRESHOLD    = 30.0   # same length units as cube pose / leap coords
+    FINGER_PROXIMITY_THRESHOLD  = 25.0
+
+    # ff payload column layout: ["Thumb","Index","Middle","Ring","Pinky"]
+    FORCE_THUMB, FORCE_INDEX, FORCE_MIDDLE = 0, 1, 2
+    FLEX_THUMB, FLEX_INDEX, FLEX_MIDDLE = 5, 6, 7
+
+    # keypoints_list indices, per LANDMARK_NAMES in LeapConnector.py
+    IDX_THUMB_TIP, IDX_INDEX_TIP, IDX_MIDDLE_TIP = 4, 8, 12
+
     def __init__(self, data_manager):
         super().__init__()
         self.dm = data_manager
         self.running = True
+        self.daemon = True
+
+        # Caches - ff / hp / cube arrive independently and at different
+        # rates, so we hold the latest of each rather than requiring all
+        # three to land in the same tick.
+        self.latest_force = None   # 10 values: [f_thumb..f_pinky, flex_thumb..flex_pinky]
+        self.latest_hands = None   # list of hand dicts (LeapConnector.get_latest_hands())
+        self.latest_cube = None    # [tx, ty, tz, rx, ry, rz]
+
+        self.latest_prediction = False
+        self.frame_id = 0
 
     def run(self):
         while self.running:
+            updated = False
+
             try:
-                data = self.dm.subscribers['inf_ff'].get(timeout=1.0) 
+                while True:
+                    _, *ff = self.dm.subscribers['inf_ff'].get_nowait()
+                    self.latest_force = ff
+                    updated = True
             except queue.Empty:
                 pass
+
+            try:
+                while True:
+                    _, hands = self.dm.subscribers['inf_hp'].get_nowait()
+                    self.latest_hands = hands
+                    updated = True
+            except queue.Empty:
+                pass
+
+            try:
+                while True:
+                    _, *cube = self.dm.subscribers['inf_cube'].get_nowait()
+                    self.latest_cube = cube
+                    updated = True
+            except queue.Empty:
+                pass
+
+            if not updated:
+                time.sleep(0.005)
+                continue
+
+            prev = self.latest_prediction
+            self.latest_prediction = self._evaluate_grasp()
+            self.frame_id += 1
+
+            if self.latest_prediction != prev:
+                self.dm.broadcast_grasp('GRASPED' if self.latest_prediction else 'RELEASED')
+                self.dm.log_event(f"Grasp {'GRASPED' if self.latest_prediction else 'RELEASED'}")
+
+    def _evaluate_grasp(self) -> bool:
+        if self.latest_force is None or self.latest_hands is None or self.latest_cube is None:
+            return False
+
+        thumb_tip = index_tip = middle_tip = None
+        for hand in self.latest_hands:
+            kp = hand.get("keypoints_list")
+            if not kp or len(kp) <= self.IDX_MIDDLE_TIP:
+                continue
+            thumb_tip = np.array(kp[self.IDX_THUMB_TIP])
+            index_tip = np.array(kp[self.IDX_INDEX_TIP])
+            middle_tip = np.array(kp[self.IDX_MIDDLE_TIP])
+            break  # only using the first tracked hand for now
+
+        if thumb_tip is None or index_tip is None or middle_tip is None:
+            return False
+
+        # 1. Force
+        thumb_force = self.latest_force[self.FORCE_THUMB]
+        pinch_force = self.latest_force[self.FORCE_INDEX] + self.latest_force[self.FORCE_MIDDLE]
+        force_ok = (thumb_force > self.FORCE_THUMB_THRESHOLD and
+                    pinch_force > self.FORCE_PINCH_THRESHOLD)
+
+        # 2. Proximity
+        cube_pos = np.array(self.latest_cube[:3])
+        cube_dist_ok = all(
+            np.linalg.norm(tip - cube_pos) < self.CUBE_PROXIMITY_THRESHOLD
+            for tip in (thumb_tip, index_tip, middle_tip)
+        )
+        finger_dist_ok = (
+            np.linalg.norm(thumb_tip - index_tip) < self.FINGER_PROXIMITY_THRESHOLD and
+            np.linalg.norm(thumb_tip - middle_tip) < self.FINGER_PROXIMITY_THRESHOLD and
+            np.linalg.norm(index_tip - middle_tip) < self.FINGER_PROXIMITY_THRESHOLD
+        )
+        proximity_ok = cube_dist_ok and finger_dist_ok
+
+        # 3. Flex
+        flex_ok = (
+            self.latest_force[self.FLEX_THUMB] > self.FLEX_BENT_THRESHOLD and
+            self.latest_force[self.FLEX_INDEX] > self.FLEX_BENT_THRESHOLD and
+            self.latest_force[self.FLEX_MIDDLE] > self.FLEX_BENT_THRESHOLD
+        )
+
+        return bool(force_ok and proximity_ok and flex_ok)
 
     def stop(self):
         self.running = False

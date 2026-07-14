@@ -22,7 +22,11 @@ class DataManager:
             # Grasp inference
             'inf_ff': queue.Queue(),
             'inf_hp': queue.Queue(),
-            'inf_cube': queue.Queue()
+            'inf_cube': queue.Queue(),
+
+            # Grasp detected
+            'gui_grasp': queue.Queue(),
+            'tcp_grasp': queue.Queue()
         }
 
     def broadcast_imu(self, data):
@@ -44,6 +48,10 @@ class DataManager:
     def broadcast_cube(self, data):
         self.subscribers['gui_cube'].put(data)
         self.subscribers['inf_cube'].put(data)
+
+    def braodcast_grasp(self, data):
+        self.subscribers['gui_grasp'].put(data)
+        self.subscribers['tcp_grasp'].put(data)
 
     def log_event(self, msg, is_error=False):
         """Sends logs and error flags to the GUI."""

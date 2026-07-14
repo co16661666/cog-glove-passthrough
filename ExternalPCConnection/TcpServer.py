@@ -61,6 +61,7 @@ class HandDataManager(threading.Thread):
         super().__init__()
         self.latest_grasp_index = 0
         self.latest_hand_index = 0
+        self.cube_grasped = False
         self.shutdown_event = shutdown_event
         self.dm = dm
         self.daemon = True
@@ -71,9 +72,17 @@ class HandDataManager(threading.Thread):
         self.dm.log_event(f"Data manager started", is_error=False)
         while not self.shutdown_event.is_set():
             if use_inference and predictor is not None:
-                if self.latest_grasp_index < predictor.frame_id:
-                    self.latest_grasp_index = predictor.frame_id
-                    val = [1.0] if predictor.latest_prediction else [0.0]
+                updated = False
+
+                try:
+                    while True:
+                        self.cube_grasped = self.dm.subscribers['tcp_grasp'].get_nowait()
+                        updated = True
+                except queue.Empty:
+                    pass
+                
+                if updated:
+                    val = [1.0] if self.cube_grasped else [0.0]
                     safe_put((latest_timestamp, val))
 
             if use_hands and leap_thread is not None:
