@@ -60,6 +60,7 @@ public class TcpDataClient : MonoBehaviour
         float[] sendPose = new float[] { pose.tx, pose.ty, pose.tz, pose.rx, pose.ry, pose.rz };
 
         SendFrameOverNetwork(timestamp, sendPose);
+        SendFrameOverNetwork(timestamp, LatestHandFrame.ToFlattenedFloatArray());
     }
     private void Start()
     {

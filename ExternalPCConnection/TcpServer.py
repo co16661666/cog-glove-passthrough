@@ -89,7 +89,6 @@ class HandDataManager(threading.Thread):
                 if self.latest_hand_index < leap_thread.get_latest_frame_id():
                     self.latest_hand_index = leap_thread.get_latest_frame_id()
                     safe_put((latest_timestamp, leap_thread.get_latest_hands_flattened()))
-                    self.dm.broadcast_hp((latest_timestamp, leap_thread.get_latest_hands()))
 
             time.sleep(0.006)
 
@@ -152,6 +151,8 @@ class TCPReceiverThread(threading.Thread):
                 received_floats = list(struct.unpack(float_format, payload_bytes))
                 if len(received_floats) == 6:
                     self.dm.broadcast_cube((timestamp, received_floats))
+                elif (len(received_floats) - 1) % 64 == 0: # 0 hands (1 float), 1 hands (65 floats), 2 hands (129 floats)
+                    self.dm.broadcast_hp((timestamp, received_floats))
 
             except (ConnectionResetError, BrokenPipeError):
                 print("Client disconnected.")

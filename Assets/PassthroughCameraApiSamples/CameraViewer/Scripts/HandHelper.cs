@@ -91,4 +91,69 @@ public struct HandTrackingFrame
     public ulong timestamp;
     public int handCount;
     public HandLandmarks[] hands;
+
+    public float[] ToFlattenedFloatArray()
+    {
+        // Calculate exact total size:
+        // 1 float (for handCount) + (64 floats per hand * handCount)
+        int actualHandCount = (hands != null) ? hands.Length : 0;
+        int totalSize = 1 + (actualHandCount * 64);
+        
+        float[] result = new float[totalSize];
+
+        // 1. Index 0: Number of hands
+        result[0] = (float)actualHandCount;
+
+        // 2. Serialize each hand block
+        int index = 1;
+        for (int i = 0; i < actualHandCount; i++)
+        {
+            HandLandmarks hand = hands[i];
+
+            // 1 float: Hand Type (0.0 = left, 1.0 = right)
+            result[index++] = hand.isLeft ? 0.0f : 1.0f;
+
+            // 63 floats: 21 landmark Vector3 values (x, y, z) in strict sequential order
+            void WriteV3(Vector3 v)
+            {
+                result[index++] = v.x;
+                result[index++] = v.y;
+                result[index++] = v.z;
+            }
+
+            WriteV3(hand.wrist);
+
+            // Thumb
+            WriteV3(hand.thumbCmc);
+            WriteV3(hand.thumbMcp);
+            WriteV3(hand.thumbIp);
+            WriteV3(hand.thumbTip);
+
+            // Index
+            WriteV3(hand.indexMcp);
+            WriteV3(hand.indexPip);
+            WriteV3(hand.indexDip);
+            WriteV3(hand.indexTip);
+
+            // Middle
+            WriteV3(hand.midMcp);
+            WriteV3(hand.midPip);
+            WriteV3(hand.midDip);
+            WriteV3(hand.midTip);
+
+            // Ring
+            WriteV3(hand.ringMcp);
+            WriteV3(hand.ringPip);
+            WriteV3(hand.ringDip);
+            WriteV3(hand.ringTip);
+
+            // Pinky
+            WriteV3(hand.pinkyMcp);
+            WriteV3(hand.pinkyPip);
+            WriteV3(hand.pinkyDip);
+            WriteV3(hand.pinkyTip);
+        }
+
+        return result;
+    }
 }
