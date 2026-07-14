@@ -49,7 +49,7 @@ class DataManager:
         self.subscribers['gui_cube'].put(data)
         self.subscribers['inf_cube'].put(data)
 
-    def braodcast_grasp(self, data):
+    def broadcast_grasp(self, data):
         self.subscribers['gui_grasp'].put(data)
         self.subscribers['tcp_grasp'].put(data)
 
