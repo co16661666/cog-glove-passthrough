@@ -248,9 +248,14 @@ class GraspInferenceThread(threading.Thread):
             kp = hand.get("keypoints_list")
             if not kp or len(kp) <= self.IDX_MIDDLE_TIP:
                 continue
-            thumb_tip = np.array(kp[self.IDX_THUMB_TIP])
-            index_tip = np.array(kp[self.IDX_INDEX_TIP])
-            middle_tip = np.array(kp[self.IDX_MIDDLE_TIP])
+            raw_thumb = np.array(kp[self.IDX_THUMB_TIP])
+            raw_index = np.array(kp[self.IDX_INDEX_TIP])
+            raw_middle = np.array(kp[self.IDX_MIDDLE_TIP])
+
+            # Apply transformation: [-x/1000, -z/1000, y/1000]
+            thumb_tip = np.array([-raw_thumb[0] / 1000.0, -raw_thumb[2] / 1000.0, raw_thumb[1] / 1000.0])
+            index_tip = np.array([-raw_index[0] / 1000.0, -raw_index[2] / 1000.0, raw_index[1] / 1000.0])
+            middle_tip = np.array([-raw_middle[0] / 1000.0, -raw_middle[2] / 1000.0, raw_middle[1] / 1000.0])
             break  # only using the first tracked hand for now
 
         if thumb_tip is None or index_tip is None or middle_tip is None:
