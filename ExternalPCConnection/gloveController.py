@@ -252,7 +252,7 @@ class GraspInferenceThread(threading.Thread):
             raw_thumb = np.array(kp[self.IDX_THUMB_TIP])
             raw_index = np.array(kp[self.IDX_INDEX_TIP])
             raw_middle = np.array(kp[self.IDX_MIDDLE_TIP])
-            
+
             break  # only using the first tracked hand for now
 
         if thumb_tip is None or index_tip is None or middle_tip is None:
@@ -353,12 +353,6 @@ class HandCubeTab(QWidget):
         self.cube_lines.setVisible(self.show_cube)
 
     @staticmethod
-    def _transform_point(raw_xyz):
-        # Same convention as GraspInferenceThread: [-x/1000, -z/1000, y/1000]
-        x, y, z = raw_xyz
-        return (-x / 1000.0, -z / 1000.0, y / 1000.0)
-
-    @staticmethod
     def _cube_corners(tx, ty, tz, rx, ry, rz, half_extent):
         cx, cy, cz = np.cos([rx, ry, rz])
         sx, sy, sz = np.sin([rx, ry, rz])
@@ -404,7 +398,7 @@ class HandCubeTab(QWidget):
                 indices = self.FINGERTIP_INDICES if self.show_fingertips_only else range(len(kp))
                 for idx in indices:
                     if idx < len(kp):
-                        pts.append(self._transform_point(kp[idx]))
+                        pts.append(kp[idx])
             if pts:
                 self.hand_scatter.setData(pos=np.array(pts))
 
