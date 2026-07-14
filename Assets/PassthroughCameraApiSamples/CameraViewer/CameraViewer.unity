@@ -2046,6 +2046,10 @@ MonoBehaviour:
   m_host: 127.0.0.1
   m_port: 65432
   m_cameraAccess: {fileID: 1608124433}
+  m_cubePose: {fileID: 1094083039}
+  LeapOffsetX: 0
+  LeapOffsetY: 0
+  LeapOffsetZ: 0
   Grasped: 0
 --- !u!4 &1438792198
 Transform:
