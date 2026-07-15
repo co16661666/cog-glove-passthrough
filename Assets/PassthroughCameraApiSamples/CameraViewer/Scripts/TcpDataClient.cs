@@ -28,6 +28,7 @@ public class TcpDataClient : MonoBehaviour
     [SerializeField] private string m_host = "127.0.0.1";
     [SerializeField] private int m_port = 65432;
     [SerializeField] private PassthroughCameraAccess m_cameraAccess;
+    [SerializeField] private ImageStreamer m_cubePose;
     [DebugMember(Tweakable = true, Category = "Adjustment", Min = -0.5f, Max = 0.5f)] public float LeapOffsetX;
     [DebugMember(Tweakable = true, Category = "Adjustment", Min = -0.5f, Max = 0.5f)] public float LeapOffsetY;
     [DebugMember(Tweakable = true, Category = "Adjustment", Min = -0.5f, Max = 0.5f)] public float LeapOffsetZ;
@@ -43,7 +44,24 @@ public class TcpDataClient : MonoBehaviour
     public bool Grasped = false;
     private Pose m_cachedCameraPose;
     private readonly object m_poseLock = new object();
+    void OnEnable()
+    {
+        m_cubePose.OnPoseUpdated += HandlePoseUpdated;
+    }
 
+    void OnDisable()
+    {
+        m_cubePose.OnPoseUpdated -= HandlePoseUpdated;
+    }
+
+    private void HandlePoseUpdated(ImageStreamer.CVPose pose)
+    {
+        ulong timestamp = pose.timestamp;
+        float[] sendPose = new float[] { pose.tx, pose.ty, pose.tz, pose.rx, pose.ry, pose.rz };
+
+        SendFrameOverNetwork(timestamp, sendPose);
+        SendFrameOverNetwork(timestamp, LatestHandFrame.ToFlattenedFloatArray());
+    }
     private void Start()
     {
         ConnectToServer();

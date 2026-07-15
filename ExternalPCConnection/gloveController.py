@@ -7,13 +7,15 @@ from datetime import datetime
 import numpy as np
 import serial
 
-from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QCheckBox,
                              QTabWidget, QToolBar, QPushButton, QSlider, QLabel, 
                              QHBoxLayout, QTextEdit, QStatusBar, QGridLayout, QGroupBox)
 from PyQt6.QtCore import QTimer, Qt
+import pyqtgraph.opengl as gl          # for 3D plots
 import pyqtgraph as pg
 
 from TcpServer import TcpServer
+from DataManager import DataManager
 
 # --- Constants & Formats ---
 COM_PORT = 'COM16'  # <-- CHANGE THIS TO YOUR TEENSY PORT
@@ -39,37 +41,21 @@ CMD_DEBUG = b'\x00'
 CMD_CALIB = b'\x01'
 CMD_STREAM = b'\x02'
 
+# --- Tunable thresholds (raw sensor units unless noted) ----------------
+FORCE_THUMB_THRESHOLD       = 50
+FORCE_PINCH_THRESHOLD       = 80     # index + middle summed
+FLEX_BENT_THRESHOLD         = 500
+CUBE_PROXIMITY_THRESHOLD    = 0.05   # meters
+FINGER_PROXIMITY_THRESHOLD  = 0.05
 
-# --- Data Management (Pub/Sub Queues) ---
-class DataManager:
-    """Manages routing of parsed serial data to different consumers."""
+class ThresholdStore:
+    """Shared, GIL-safe container for live-tunable thresholds."""
     def __init__(self):
-        self.subscribers = {
-            'gui_imu': queue.Queue(),
-            'gui_ff': queue.Queue(),
-            'gui_calib': queue.Queue(),
-            'gui_log': queue.Queue(), # For errors and text logs
-            'log_imu': queue.Queue(),
-            'log_ff': queue.Queue(),
-            'inf_ff': queue.Queue()
-        }
-
-    def broadcast_imu(self, data):
-        self.subscribers['gui_imu'].put(data)
-        self.subscribers['log_imu'].put(data)
-
-    def broadcast_ff(self, data):
-        self.subscribers['gui_ff'].put(data)
-        self.subscribers['log_ff'].put(data)
-        self.subscribers['inf_ff'].put(data)
-        
-    def broadcast_calib(self, data):
-        self.subscribers['gui_calib'].put(data)
-
-    def log_event(self, msg, is_error=False):
-        """Sends logs and error flags to the GUI."""
-        self.subscribers['gui_log'].put((time.time(), msg, is_error))
-
+        self.force_thumb = FORCE_THUMB_THRESHOLD
+        self.force_pinch = FORCE_PINCH_THRESHOLD
+        self.flex_bent = FLEX_BENT_THRESHOLD
+        self.cube_proximity = CUBE_PROXIMITY_THRESHOLD
+        self.finger_proximity = FINGER_PROXIMITY_THRESHOLD
 
 # --- Serial Reader Thread ---
 class SerialThread(threading.Thread):
@@ -189,28 +175,332 @@ class LoggerThread(threading.Thread):
 
 # --- Mock Inference Thread Example ---
 class GraspInferenceThread(threading.Thread):
-    def __init__(self, data_manager):
+    """
+    Rule-based grasp detector. A grasp is flagged only when all three
+    signals agree for the current frame:
+      1. Force  - thumb fingertip force exceeds its own threshold AND
+                  (index + middle) fingertip force, summed, exceeds a
+                  pinch threshold.
+      2. Proximity - thumb/index/middle fingertips are each close to the
+                     cube AND close to one another (tripod pinch geometry).
+      3. Flex   - thumb/index/middle flex sensors read as "bent".
+    """
+
+    # ff payload column layout: ["Thumb","Index","Middle","Ring","Pinky"]
+    FORCE_THUMB, FORCE_INDEX, FORCE_MIDDLE = 0, 1, 2
+    FLEX_THUMB, FLEX_INDEX, FLEX_MIDDLE = 5, 6, 7
+
+    # keypoints_list indices, per LANDMARK_NAMES in LeapConnector.py
+    IDX_THUMB_TIP, IDX_INDEX_TIP, IDX_MIDDLE_TIP = 4, 8, 12
+
+    def __init__(self, data_manager, thresholds):
         super().__init__()
         self.dm = data_manager
+        self.thresholds = thresholds
         self.running = True
+        self.daemon = True
+
+        # Caches - ff / hp / cube arrive independently and at different
+        # rates, so we hold the latest of each rather than requiring all
+        # three to land in the same tick.
+        self.latest_force = None   # 10 values: [f_thumb..f_pinky, flex_thumb..flex_pinky]
+        self.latest_hands = None   # list of hand dicts (LeapConnector.get_latest_hands())
+        self.latest_cube = None    # [tx, ty, tz, rx, ry, rz]
+
+        self.latest_prediction = False
+        self.frame_id = 0
 
     def run(self):
         while self.running:
+            updated = False
+
             try:
-                data = self.dm.subscribers['inf_ff'].get(timeout=1.0) 
+                while True:
+                    _, *ff = self.dm.subscribers['inf_ff'].get_nowait()
+                    self.latest_force = ff
+                    updated = True
             except queue.Empty:
                 pass
+
+            try:
+                while True:
+                    _, hands = self.dm.subscribers['inf_hp'].get_nowait()
+                    self.latest_hands = hands
+                    updated = True
+            except queue.Empty:
+                pass
+
+            try:
+                while True:
+                    _, cube = self.dm.subscribers['inf_cube'].get_nowait()  # (timestamp, [tx,ty,tz,rx,ry,rz])
+                    self.latest_cube = cube
+                    updated = True
+            except queue.Empty:
+                pass
+
+            if not updated:
+                time.sleep(0.005)
+                continue
+
+            prev = self.latest_prediction
+            self.latest_prediction = self._evaluate_grasp()
+            self.frame_id += 1
+
+            if self.latest_prediction != prev:
+                self.dm.broadcast_grasp('GRASPED' if self.latest_prediction else 'RELEASED')
+                self.dm.log_event(f"Grasp {'GRASPED' if self.latest_prediction else 'RELEASED'}")
+
+    def _evaluate_grasp(self) -> bool:
+        if self.latest_force is None or self.latest_hands is None or self.latest_cube is None:
+            return False
+
+        thumb_tip = index_tip = middle_tip = None
+        for hand in self.latest_hands:
+            kp = hand.get("keypoints_list")
+            if not kp or len(kp) <= self.IDX_MIDDLE_TIP:
+                continue
+            raw_thumb = np.array(kp[self.IDX_THUMB_TIP])
+            raw_index = np.array(kp[self.IDX_INDEX_TIP])
+            raw_middle = np.array(kp[self.IDX_MIDDLE_TIP])
+
+            break  # only using the first tracked hand for now
+
+        if thumb_tip is None or index_tip is None or middle_tip is None:
+            return False
+
+        # 1. Force
+        thumb_force = self.latest_force[self.FORCE_THUMB]
+        pinch_force = self.latest_force[self.FORCE_INDEX] + self.latest_force[self.FORCE_MIDDLE]
+        force_ok = (thumb_force > self.thresholds.force_thumb and pinch_force > self.thresholds.force_pinch)
+
+        # 2. Proximity
+        cube_pos = np.array(self.latest_cube[:3])
+        cube_dist_ok = all(
+            np.linalg.norm(tip - cube_pos) < self.thresholds.cube_proximity
+            for tip in (thumb_tip, index_tip, middle_tip)
+        )
+        finger_dist_ok = (
+            np.linalg.norm(thumb_tip - index_tip) < self.thresholds.finger_proximity and
+            np.linalg.norm(thumb_tip - middle_tip) < self.thresholds.finger_proximity and
+            np.linalg.norm(index_tip - middle_tip) < self.thresholds.finger_proximity
+        )
+        proximity_ok = cube_dist_ok and finger_dist_ok
+
+        # 3. Flex
+        flex_ok = (
+            self.latest_force[self.FLEX_THUMB] > self.thresholds.flex_bent and
+            self.latest_force[self.FLEX_INDEX] > self.thresholds.flex_bent and
+            self.latest_force[self.FLEX_MIDDLE] > self.thresholds.flex_bent
+        )
+
+        return bool(force_ok and proximity_ok and flex_ok)
 
     def stop(self):
         self.running = False
 
+# --- 3D Plotting ---
+class HandCubeTab(QWidget):
+    """3D viewer for hand landmarks and the tracked cube, with visibility toggles."""
+
+    # Standard 21-point hand landmark indices (per LANDMARK_NAMES in LeapConnector.py)
+    FINGERTIP_INDICES = [4, 8, 12, 16, 20]  # thumb, index, middle, ring, pinky tips
+    CUBE_HALF_EXTENT = 0.02  # meters
+
+    def __init__(self, data_manager, thresholds, parent=None):
+        super().__init__(parent)
+        self.dm = data_manager
+        self.thresholds = thresholds
+        self.show_fingertips_only = False
+        self.show_cube = True
+        self.show_hand = True
+        self.latest_tripod = None # finger tips
+        self.latest_cube_pos = None
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+
+        controls = QHBoxLayout()
+        self.chk_show_hand = QCheckBox("Show Hand")
+        self.chk_show_hand.setChecked(True)
+        self.chk_show_hand.stateChanged.connect(self._on_hand_toggle)
+        controls.addWidget(self.chk_show_hand)
+
+        self.chk_fingertips_only = QCheckBox("Fingertips Only")
+        self.chk_fingertips_only.stateChanged.connect(self._on_fingertips_toggle)
+        controls.addWidget(self.chk_fingertips_only)
+
+        self.chk_show_cube = QCheckBox("Show Cube")
+        self.chk_show_cube.setChecked(True)
+        self.chk_show_cube.stateChanged.connect(self._on_cube_toggle)
+        controls.addWidget(self.chk_show_cube)
+
+        controls.addStretch()
+        layout.addLayout(controls)
+
+        self.view = gl.GLViewWidget()
+        self.view.setCameraPosition(distance=0.5)
+        grid = gl.GLGridItem()
+        grid.setSize(1, 1)
+        grid.setSpacing(0.05, 0.05)
+        self.view.addItem(grid)
+        layout.addWidget(self.view)
+
+        self.hand_scatter = gl.GLScatterPlotItem(pos=np.zeros((1, 3)), color=(0.2, 0.8, 1.0, 1.0), size=8)
+        self.view.addItem(self.hand_scatter)
+
+        # 12 edges of the cube, drawn as a wireframe via GLLinePlotItem(mode='lines')
+        self.cube_lines = gl.GLLinePlotItem(pos=np.zeros((2, 3)), color=(1.0, 0.4, 0.1, 1.0), width=2, mode='lines')
+        self.view.addItem(self.cube_lines)
+
+        thresh_group = QGroupBox("Proximity Thresholds")
+        thresh_layout = QGridLayout()
+
+        thresh_layout.addWidget(QLabel("Cube Proximity Threshold:"), 0, 0)
+        self.sld_cube_thresh = QSlider(Qt.Orientation.Horizontal)
+        self.sld_cube_thresh.setRange(1, 500)  # millimeters
+        self.sld_cube_thresh.setValue(int(self.thresholds.cube_proximity * 1000))
+        self.sld_cube_thresh.valueChanged.connect(self._on_cube_thresh_slider)
+        thresh_layout.addWidget(self.sld_cube_thresh, 0, 1)
+        self.lbl_cube_thresh_val = QLabel(f"{self.thresholds.cube_proximity:.3f} m")
+        thresh_layout.addWidget(self.lbl_cube_thresh_val, 0, 2)
+        thresh_layout.addWidget(QLabel("Min Tip-to-Cube Dist:"), 0, 3)
+        self.lbl_cube_dist = QLabel("--")
+        thresh_layout.addWidget(self.lbl_cube_dist, 0, 4)
+
+        thresh_layout.addWidget(QLabel("Finger Proximity Threshold:"), 1, 0)
+        self.sld_finger_thresh = QSlider(Qt.Orientation.Horizontal)
+        self.sld_finger_thresh.setRange(1, 500)  # millimeters
+        self.sld_finger_thresh.setValue(int(self.thresholds.finger_proximity * 1000))
+        self.sld_finger_thresh.valueChanged.connect(self._on_finger_thresh_slider)
+        thresh_layout.addWidget(self.sld_finger_thresh, 1, 1)
+        self.lbl_finger_thresh_val = QLabel(f"{self.thresholds.finger_proximity:.3f} m")
+        thresh_layout.addWidget(self.lbl_finger_thresh_val, 1, 2)
+        thresh_layout.addWidget(QLabel("Max Finger-to-Finger Dist:"), 1, 3)
+        self.lbl_finger_dist = QLabel("--")
+        thresh_layout.addWidget(self.lbl_finger_dist, 1, 4)
+
+        thresh_group.setLayout(thresh_layout)
+        layout.addWidget(thresh_group)
+
+    def _on_cube_thresh_slider(self, value_mm):
+        self.thresholds.cube_proximity = value_mm / 1000.0
+        self.lbl_cube_thresh_val.setText(f"{self.thresholds.cube_proximity:.3f} m")
+
+    def _on_finger_thresh_slider(self, value_mm):
+        self.thresholds.finger_proximity = value_mm / 1000.0
+        self.lbl_finger_thresh_val.setText(f"{self.thresholds.finger_proximity:.3f} m")
+
+    def _on_hand_toggle(self, state):
+        self.show_hand = bool(state)
+        self.hand_scatter.setVisible(self.show_hand)
+
+    def _on_fingertips_toggle(self, state):
+        self.show_fingertips_only = bool(state)
+
+    def _on_cube_toggle(self, state):
+        self.show_cube = bool(state)
+        self.cube_lines.setVisible(self.show_cube)
+
+    def _update_threshold_readout(self):
+        if self.latest_tripod is None:
+            return
+
+        thumb = np.array(self.latest_tripod['thumb'])
+        index = np.array(self.latest_tripod['index'])
+        middle = np.array(self.latest_tripod['middle'])
+
+        finger_dist = max(
+            np.linalg.norm(thumb - index),
+            np.linalg.norm(thumb - middle),
+            np.linalg.norm(index - middle),
+        )
+        finger_ok = finger_dist < self.thresholds.finger_proximity
+        self.lbl_finger_dist.setText(f"{finger_dist:.3f} m")
+        self.lbl_finger_dist.setStyleSheet(f"color: {'#2ecc71' if finger_ok else '#e74c3c'}; font-weight: bold;")
+
+        if self.latest_cube_pos is not None:
+            cube_dist = max(
+                np.linalg.norm(thumb - self.latest_cube_pos),
+                np.linalg.norm(index - self.latest_cube_pos),
+                np.linalg.norm(middle - self.latest_cube_pos),
+            )
+            cube_ok = cube_dist < self.thresholds.cube_proximity
+            self.lbl_cube_dist.setText(f"{cube_dist:.3f} m")
+            self.lbl_cube_dist.setStyleSheet(f"color: {'#2ecc71' if cube_ok else '#e74c3c'}; font-weight: bold;")
+
+    @staticmethod
+    def _cube_corners(tx, ty, tz, rx, ry, rz, half_extent):
+        cx, cy, cz = np.cos([rx, ry, rz])
+        sx, sy, sz = np.sin([rx, ry, rz])
+        Rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]])
+        Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
+        Rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]])
+        R = Rz @ Ry @ Rx
+
+        h = half_extent
+        local_corners = np.array([
+            [-h, -h, -h], [h, -h, -h], [h, h, -h], [-h, h, -h],
+            [-h, -h, h], [h, -h, h], [h, h, h], [-h, h, h],
+        ])
+        return (R @ local_corners.T).T + np.array([tx, ty, tz])
+
+    @staticmethod
+    def _cube_edges(corners):
+        edge_idx = [
+            (0, 1), (1, 2), (2, 3), (3, 0),  # bottom face
+            (4, 5), (5, 6), (6, 7), (7, 4),  # top face
+            (0, 4), (1, 5), (2, 6), (3, 7),  # verticals
+        ]
+        pts = []
+        for i, j in edge_idx:
+            pts.append(corners[i])
+            pts.append(corners[j])
+        return np.array(pts)
+
+    def update_view(self):
+        # --- Hand points ---
+        hp_queue = self.dm.subscribers['gui_hp']
+        latest_hands = None
+        while not hp_queue.empty():
+            _, hands = hp_queue.get()
+            latest_hands = hands
+
+        if latest_hands is not None and self.show_hand:
+            pts = []
+            for hand in latest_hands:
+                kp = hand.get("keypoints_list")
+                if not kp:
+                    continue
+                indices = self.FINGERTIP_INDICES if self.show_fingertips_only else range(len(kp))
+                for idx in indices:
+                    if idx < len(kp):
+                        pts.append(kp[idx])
+            if pts:
+                self.hand_scatter.setData(pos=np.array(pts))
+
+        # --- Cube ---
+        cube_queue = self.dm.subscribers['gui_cube']
+        latest_cube = None
+        while not cube_queue.empty():
+            _, cube = cube_queue.get()  # (timestamp, [tx,ty,tz,rx,ry,rz])
+            latest_cube = cube
+
+        if latest_cube is not None:
+            self.latest_cube_pos = np.array(latest_cube[:3])
+            if self.show_cube:
+                corners = self._cube_corners(*latest_cube, self.CUBE_HALF_EXTENT) # type: ignore
+                self.cube_lines.setData(pos=self._cube_edges(corners))
+
+        self._update_threshold_readout()
 
 # --- Main PyQt6 GUI ---
 class MainWindow(QMainWindow):
-    def __init__(self, serial_thread):
+    def __init__(self, serial_thread, thresholds):
         super().__init__()
         self.serial_thread = serial_thread
         self.dm = serial_thread.dm
+        self.thresholds = thresholds
         
         self.setWindowTitle("Teensy Sensor Interface")
         self.resize(1100, 800)
@@ -268,17 +558,9 @@ class MainWindow(QMainWindow):
         self.setup_flex_tab()
         self.setup_force_tab()
         self.setup_imu_tab()
+        self.setup_hand_cube_tab()
         self.setup_motor_tab()
         self.setup_debug_tab()
-
-    def setup_flex_tab(self):
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        self.flex_plot = pg.PlotWidget(title="Flex Sensors (Analog Read)")
-        self.flex_plot.addLegend()
-        self.flex_curves = [self.flex_plot.plot(pen=(i, 5), name=n) for i, n in enumerate(["Thumb", "Index", "Middle", "Ring", "Pinky"])]
-        layout.addWidget(self.flex_plot)
-        self.tabs.addTab(tab, "Flex Graphs")
 
     def setup_force_tab(self):
         tab = QWidget()
@@ -286,8 +568,67 @@ class MainWindow(QMainWindow):
         self.force_plot = pg.PlotWidget(title="Force Sensors (Analog Read)")
         self.force_plot.addLegend()
         self.force_curves = [self.force_plot.plot(pen=(i, 5), name=n) for i, n in enumerate(["Thumb", "Index", "Middle", "Ring", "Pinky"])]
+
+        self.thumb_thresh_line = pg.InfiniteLine(pos=self.thresholds.force_thumb, angle=0, pen=pg.mkPen('r', style=Qt.PenStyle.DashLine),
+                                                   label="Thumb Threshold", labelOpts={'color': 'r', 'position': 0.95})
+        self.pinch_thresh_line = pg.InfiniteLine(pos=self.thresholds.force_pinch, angle=0, pen=pg.mkPen('y', style=Qt.PenStyle.DashLine),
+                                                   label="Pinch Threshold (Idx+Mid sum)", labelOpts={'color': 'y', 'position': 0.85})
+        self.force_plot.addItem(self.thumb_thresh_line)
+        self.force_plot.addItem(self.pinch_thresh_line)
         layout.addWidget(self.force_plot)
+
+        slider_row = QHBoxLayout()
+        slider_row.addWidget(QLabel("Thumb Thresh:"))
+        sld_thumb = QSlider(Qt.Orientation.Horizontal)
+        sld_thumb.setRange(0, 1000)
+        sld_thumb.setValue(int(self.thresholds.force_thumb))
+        sld_thumb.valueChanged.connect(self._on_force_thumb_slider)
+        slider_row.addWidget(sld_thumb)
+
+        slider_row.addWidget(QLabel("Pinch Thresh:"))
+        sld_pinch = QSlider(Qt.Orientation.Horizontal)
+        sld_pinch.setRange(0, 1000)
+        sld_pinch.setValue(int(self.thresholds.force_pinch))
+        sld_pinch.valueChanged.connect(self._on_force_pinch_slider)
+        slider_row.addWidget(sld_pinch)
+        layout.addLayout(slider_row)
+
         self.tabs.addTab(tab, "Force Graphs")
+
+    def _on_force_thumb_slider(self, value):
+        self.thresholds.force_thumb = value
+        self.thumb_thresh_line.setPos(value)
+
+    def _on_force_pinch_slider(self, value):
+        self.thresholds.force_pinch = value
+        self.pinch_thresh_line.setPos(value)
+
+    def setup_flex_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        self.flex_plot = pg.PlotWidget(title="Flex Sensors (Analog Read)")
+        self.flex_plot.addLegend()
+        self.flex_curves = [self.flex_plot.plot(pen=(i, 5), name=n) for i, n in enumerate(["Thumb", "Index", "Middle", "Ring", "Pinky"])]
+
+        self.bent_thresh_line = pg.InfiniteLine(pos=self.thresholds.flex_bent, angle=0, pen=pg.mkPen('r', style=Qt.PenStyle.DashLine),
+                                                  label="Bent Threshold", labelOpts={'color': 'r', 'position': 0.95})
+        self.flex_plot.addItem(self.bent_thresh_line)
+        layout.addWidget(self.flex_plot)
+
+        slider_row = QHBoxLayout()
+        slider_row.addWidget(QLabel("Bent Thresh:"))
+        sld_flex = QSlider(Qt.Orientation.Horizontal)
+        sld_flex.setRange(0, 1023)
+        sld_flex.setValue(int(self.thresholds.flex_bent))
+        sld_flex.valueChanged.connect(self._on_flex_bent_slider)
+        slider_row.addWidget(sld_flex)
+        layout.addLayout(slider_row)
+
+        self.tabs.addTab(tab, "Flex Graphs")
+
+    def _on_flex_bent_slider(self, value):
+        self.thresholds.flex_bent = value
+        self.bent_thresh_line.setPos(value)
 
     def setup_imu_tab(self):
         tab = QWidget()
@@ -303,6 +644,10 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.accel_plot)
         layout.addWidget(self.quat_plot)
         self.tabs.addTab(tab, "IMU Data")
+    
+    def setup_hand_cube_tab(self):
+        self.hand_cube_tab = HandCubeTab(self.dm, self.thresholds)
+        self.tabs.addTab(self.hand_cube_tab, "Hand & Cube")
 
     def setup_motor_tab(self):
         tab = QWidget()
@@ -463,6 +808,9 @@ class MainWindow(QMainWindow):
         elif curr_time - self.last_imu_time > 2.0:
             self.set_indicator(self.ind_imu, False, "NO DATA")
 
+        # --- Handle 3D Plot ---
+        self.hand_cube_tab.update_view()
+
 
     def closeEvent(self, event): # type: ignore
         self.dm.log_event("Closing application, cleaning up threads...")
@@ -474,18 +822,20 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     
     dm = DataManager()
+    thresholds = ThresholdStore()
+
     ser_thread = SerialThread(COM_PORT, BAUD_RATE, dm)
     log_thread = LoggerThread(dm)
-    inf_thread = GraspInferenceThread(dm)
+    inf_thread = GraspInferenceThread(dm, thresholds)
 
     ser_thread.start()
     log_thread.start()
     inf_thread.start()
 
-    tcp_thread = TcpServer("127.0.0.1", 65432)
+    tcp_thread = TcpServer("127.0.0.1", 65432, dm)
     tcp_thread.start()
 
-    window = MainWindow(ser_thread)
+    window = MainWindow(ser_thread, thresholds)
     window.show()
     
     app.exec()

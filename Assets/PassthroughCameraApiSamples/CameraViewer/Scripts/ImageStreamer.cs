@@ -69,7 +69,7 @@ public class ImageStreamer : MonoBehaviour
     private long m_lastCameraTimestamp = 0;
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct CVPose
+    public struct CVPose
     {
         public float tx, ty, tz;
         public float rx, ry, rz;
@@ -78,6 +78,10 @@ public class ImageStreamer : MonoBehaviour
         public int poseSuccess;
         public ulong timestamp;
     }
+
+    public CVPose LatestCVPose { get; private set; } // Expose for TCP client send
+    public delegate void PoseUpdateHandler(CVPose pose);
+    public event PoseUpdateHandler OnPoseUpdated; // Pose update event
 
     [StructLayout(LayoutKind.Sequential)]
     private struct CameraPose
@@ -222,6 +226,9 @@ public class ImageStreamer : MonoBehaviour
             Quaternion worldRot = Quaternion.AngleAxis(-angle * Mathf.Rad2Deg, new Vector3(axis.x, -axis.y, axis.z));
 
             bool isSecure = dataToProcess.grasped != 0;
+
+            LatestCVPose = dataToProcess;
+            OnPoseUpdated?.Invoke(dataToProcess);
 
             m_interactiveCube.transform.position = worldPos;
             m_interactiveCube.transform.rotation = worldRot;
