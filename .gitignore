@@ -29,3 +29,5 @@ Packages/packages-lock.json
 **/Native~/cmake-build-*/
 **/Native~/out/
 *_backup.cpp
+
+**/__pycache__/
