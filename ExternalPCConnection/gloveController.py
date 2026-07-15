@@ -17,6 +17,7 @@ from TcpServer import TcpServer
 from DataManager import DataManager
 from Utility.ThresholdStore import ThresholdStore
 from Utility.SerialThread import SerialThread
+import Utility.SerialThread # to access constants
 
 COM_PORT = 'COM16'  # <-- CHANGE THIS TO YOUR TEENSY PORT
 BAUD_RATE = 115200
@@ -414,15 +415,15 @@ class MainWindow(QMainWindow):
         self.addToolBar(toolbar)
 
         btn_debug = QPushButton("DEBUG MODE (IDLE)")
-        btn_debug.clicked.connect(lambda: self.serial_thread.send_command(CMD_DEBUG))
+        btn_debug.clicked.connect(lambda: self.serial_thread.send_command(Utility.SerialThread.CMD_DEBUG))
         toolbar.addWidget(btn_debug)
 
         btn_calib = QPushButton("REQUEST CALIB")
-        btn_calib.clicked.connect(lambda: self.serial_thread.send_command(CMD_CALIB))
+        btn_calib.clicked.connect(lambda: self.serial_thread.send_command(Utility.SerialThread.CMD_CALIB))
         toolbar.addWidget(btn_calib)
 
         btn_stream = QPushButton("START STREAM")
-        btn_stream.clicked.connect(lambda: self.serial_thread.send_command(CMD_STREAM))
+        btn_stream.clicked.connect(lambda: self.serial_thread.send_command(Utility.SerialThread.CMD_STREAM))
         toolbar.addWidget(btn_stream)
 
         # Tabs
