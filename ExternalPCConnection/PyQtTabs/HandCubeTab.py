@@ -50,7 +50,7 @@ class HandCubeTab(QWidget):
         grid.setSize(1, 1)
         grid.setSpacing(0.05, 0.05)
         self.view.addItem(grid)
-        layout.addWidget(self.view)
+        layout.addWidget(self.view, stretch=1)
 
         self.hand_scatter = gl.GLScatterPlotItem(pos=np.zeros((1, 3)), color=(0.2, 0.8, 1.0, 1.0), size=8)
         self.view.addItem(self.hand_scatter)
@@ -67,6 +67,7 @@ class HandCubeTab(QWidget):
         self.sld_cube_thresh.setRange(1, 500)  # millimeters
         self.sld_cube_thresh.setValue(int(self.thresholds.cube_proximity * 1000))
         self.sld_cube_thresh.valueChanged.connect(self._on_cube_thresh_slider)
+        self.sld_cube_thresh.setMaximumHeight(16)
         thresh_layout.addWidget(self.sld_cube_thresh, 0, 1)
         self.lbl_cube_thresh_val = QLabel(f"{self.thresholds.cube_proximity:.3f} m")
         thresh_layout.addWidget(self.lbl_cube_thresh_val, 0, 2)
@@ -79,6 +80,7 @@ class HandCubeTab(QWidget):
         self.sld_finger_thresh.setRange(1, 500)  # millimeters
         self.sld_finger_thresh.setValue(int(self.thresholds.finger_proximity * 1000))
         self.sld_finger_thresh.valueChanged.connect(self._on_finger_thresh_slider)
+        self.sld_finger_thresh.setMaximumHeight(16)
         thresh_layout.addWidget(self.sld_finger_thresh, 1, 1)
         self.lbl_finger_thresh_val = QLabel(f"{self.thresholds.finger_proximity:.3f} m")
         thresh_layout.addWidget(self.lbl_finger_thresh_val, 1, 2)
@@ -87,7 +89,7 @@ class HandCubeTab(QWidget):
         thresh_layout.addWidget(self.lbl_finger_dist, 1, 4)
 
         thresh_group.setLayout(thresh_layout)
-        layout.addWidget(thresh_group)
+        layout.addWidget(thresh_group, stretch=0)
 
     def _on_cube_thresh_slider(self, value_mm):
         self.thresholds.cube_proximity = value_mm / 1000.0
@@ -197,6 +199,14 @@ class HandCubeTab(QWidget):
                 kp = hand.get("keypoints_list")
                 if not kp:
                     continue
+
+                if len(kp) > 12:
+                    self.latest_tripod = {
+                        'thumb': self._unity_to_plot(*kp[4]),
+                        'index': self._unity_to_plot(*kp[8]),
+                        'middle': self._unity_to_plot(*kp[12])
+                    }
+                
                 indices = self.FINGERTIP_INDICES if self.show_fingertips_only else range(len(kp))
                 for idx in indices:
                     if idx < len(kp):
