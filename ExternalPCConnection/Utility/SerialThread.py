@@ -2,6 +2,14 @@ import serial
 import threading
 import struct
 import time
+from enum import Enum
+
+class Finger(Enum):
+    THUMB = 0
+    INDEX = 1
+    MIDDLE = 2
+    RING = 3
+    PINKY = 4
 
 # --- Constants & Formats ---
 # Packet Constants
@@ -11,10 +19,16 @@ PACKET_IMU = 0
 PACKET_FF = 1
 PACKET_CALIB = 2
 
-# Commands to send to Teensy (matching your C++ handleIdleState logic)
-CMD_DEBUG = b'\x00'
-CMD_CALIB = b'\x01'
-CMD_STREAM = b'\x02'
+# Commands to send to Teensy
+# RETURN = 0,
+# DEBUG = 1,
+# CALIBRATION = 2,
+# DATA_STREAM = 3,
+# TRIGGER_HAPTIC = 4
+CMD_RETURN = b'\x00'
+CMD_DEBUG = b'\x01'
+CMD_CALIB = b'\x02'
+CMD_STREAM = b'\x03'
 
 # Struct formats based on __attribute__((__packed__)) C++ structs
 # IMU: 4 floats (quat), 3 floats (accel) -> 28 bytes
@@ -23,6 +37,8 @@ FMT_IMU = '<7f'
 FMT_FF = '<10H'  
 # CALIB: 4 uint8 -> 4 bytes
 FMT_CALIB = '<4B'
+# HAPTIC: 4 uint8 -> 4 bytes
+FMT_HAPTIC = '<2B'
 
 # --- Serial Reader Thread ---
 class SerialThread(threading.Thread):
@@ -105,8 +121,13 @@ class SerialThread(threading.Thread):
     def send_command(self, cmd):
         if self.ser and self.ser.is_open:
             self.ser.write(cmd)
-            cmd_name = {CMD_DEBUG: "DEBUG/IDLE", CMD_CALIB: "CALIB", CMD_STREAM: "STREAM"}.get(cmd, "UNKNOWN")
+            cmd_name = {CMD_RETURN: 'CMD_RETURN', CMD_DEBUG: "DEBUG", CMD_CALIB: "CALIB", CMD_STREAM: "STREAM"}.get(cmd, "UNKNOWN")
             self.dm.log_event(f"Sent Command: {cmd_name}")
+
+    def handle_grasped(self, active_motors, intensities):
+        for finger, is_enabled in active_motors.items():
+            if is_enabled:
+                self.send_command(struct.pack(FMT_HAPTIC, Finger[finger].value, intensities[finger])) # driver, command
 
     def stop(self):
         self.running = False

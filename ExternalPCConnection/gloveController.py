@@ -75,8 +75,12 @@ class MainWindow(QMainWindow):
         # Quick-Menu Bar
         toolbar = QToolBar("Controls")
         self.addToolBar(toolbar)
- 
-        btn_debug = QPushButton("DEBUG MODE (IDLE)")
+
+        btn_debug = QPushButton("BACK")
+        btn_debug.clicked.connect(lambda: self.serial_thread.send_command(Utility.SerialThread.CMD_RETURN))
+        toolbar.addWidget(btn_debug)
+
+        btn_debug = QPushButton("DEBUG MODE")
         btn_debug.clicked.connect(lambda: self.serial_thread.send_command(Utility.SerialThread.CMD_DEBUG))
         toolbar.addWidget(btn_debug)
  
@@ -174,6 +178,18 @@ class MainWindow(QMainWindow):
  
         # --- Handle 3D Plot (drains its own queues internally) ---
         self.hand_cube_tab.update_view()
+
+        # --- Handle Grasped ---
+        grasp_queue = self.dm.subscribers['gui_grasp']
+        grasp_updates = 0
+        latest_grasp_data = None
+        while not grasp_queue.empty():
+            latest_grasp_data = grasp_queue.get()
+            grasp_updates += 1
+
+        if grasp_updates > 0:
+            if (latest_grasp_data == 'GRASPED'):   
+                self.serial_thread.handle_grasped(self.motor_tab.get_enabled_motors(), self.motor_tab.get_intensities())
  
     def closeEvent(self, event):  # type: ignore
         self.dm.log_event("Closing application, cleaning up threads...")
