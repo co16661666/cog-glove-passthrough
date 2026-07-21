@@ -137,12 +137,18 @@ class HandCubeTab(QWidget):
 
     @staticmethod
     def _cube_corners(tx, ty, tz, rx, ry, rz, half_extent):
-        cx, cy, cz = np.cos([rx, ry, rz])
-        sx, sy, sz = np.sin([rx, ry, rz])
-        Rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]])
-        Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
-        Rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]])
-        R = Rz @ Ry @ Rx
+        v = np.array([rx, ry, rz])
+        angle = np.linalg.norm(v)
+        if angle < 1e-8:
+            R = np.eye(3)
+        else:
+            axis = v / angle
+            K = np.array([
+                [0, -axis[2], axis[1]],
+                [axis[2], 0, -axis[0]],
+                [-axis[1], axis[0], 0],
+            ])
+            R = np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * (K @ K)
 
         h = half_extent
         local_corners = np.array([
@@ -163,15 +169,28 @@ class HandCubeTab(QWidget):
             pts.append(corners[i])
             pts.append(corners[j])
         return np.array(pts)
+    
+    @staticmethod
+    def _unity_to_plot(x, y, z):
+        """
+        Remap Unity's Y-up, left-handed world coords into pyqtgraph's
+        GLViewWidget convention, where GLGridItem lies flat in the XY
+        plane and Z is up.
 
-    def update_view(self):
-        # --- Hand points ---
-        hp_queue = self.dm.subscribers['gui_hp']
-        latest_hands = None
-        while not hp_queue.empty():
-            _, hands = hp_queue.get()
-            latest_hands = hands
+        Unity:      X = right,  Y = up,      Z = forward (depth)
+        pyqtgraph:  X = right,  Y = forward,  Z = up
+        """
+        return (x, z, y)
+    
+    @staticmethod
+    def _unity_to_plot_axis(x, y, z):
+        """Same remap as _unity_to_plot, but for axis-angle rotation vectors,
+        which are pseudovectors and need a sign correction under this
+        axis swap (determinant of the swap is -1)."""
+        return (x, z, -y)
 
+    def update_view(self, latest_hands, latest_cube):
+        # --- Render Hand ---
         if latest_hands is not None and self.show_hand:
             pts = []
             for hand in latest_hands:
@@ -181,21 +200,18 @@ class HandCubeTab(QWidget):
                 indices = self.FINGERTIP_INDICES if self.show_fingertips_only else range(len(kp))
                 for idx in indices:
                     if idx < len(kp):
-                        pts.append(kp[idx])
+                        pts.append(self._unity_to_plot(*kp[idx]))
             if pts:
                 self.hand_scatter.setData(pos=np.array(pts))
 
-        # --- Cube ---
-        cube_queue = self.dm.subscribers['gui_cube']
-        latest_cube = None
-        while not cube_queue.empty():
-            _, cube = cube_queue.get()  # (timestamp, [tx,ty,tz,rx,ry,rz])
-            latest_cube = cube
-
+        # --- Render Cube ---
         if latest_cube is not None:
-            self.latest_cube_pos = np.array(latest_cube[:3])
+            tx, ty, tz, rx, ry, rz = latest_cube
+            plot_pos = self._unity_to_plot(tx, ty, tz)
+            self.latest_cube_pos = np.array(plot_pos)
             if self.show_cube:
-                corners = self._cube_corners(*latest_cube, self.CUBE_HALF_EXTENT) # type: ignore
+                plot_rot = self._unity_to_plot_axis(rx, ry, rz)
+                corners = self._cube_corners(*plot_pos, *plot_rot, self.CUBE_HALF_EXTENT)
                 self.cube_lines.setData(pos=self._cube_edges(corners))
 
         self._update_threshold_readout()

@@ -223,12 +223,22 @@ public class ImageStreamer : MonoBehaviour
             Vector3 rotAxis = new Vector3(dataToProcess.rx, dataToProcess.ry, dataToProcess.rz);
             float angle = rotAxis.magnitude;
             Vector3 axis = rotAxis.normalized;
-            Quaternion worldRot = Quaternion.AngleAxis(-angle * Mathf.Rad2Deg, new Vector3(axis.x, -axis.y, axis.z));
+            Vector3 flippedAxis = new Vector3(axis.x, -axis.y, axis.z);
+            Quaternion worldRot = Quaternion.AngleAxis(-angle * Mathf.Rad2Deg, flippedAxis);
 
             bool isSecure = dataToProcess.grasped != 0;
 
-            LatestCVPose = dataToProcess;
-            OnPoseUpdated?.Invoke(dataToProcess);
+            CVPose flippedPose = dataToProcess;
+            flippedPose.tx = worldPos.x;
+            flippedPose.ty = worldPos.y;
+            flippedPose.tz = worldPos.z;
+            Vector3 flippedRotVec = -angle * flippedAxis;   // = (-rx, ry, -rz)
+            flippedPose.rx = flippedRotVec.x;
+            flippedPose.ry = flippedRotVec.y;
+            flippedPose.rz = flippedRotVec.z;
+
+            LatestCVPose = flippedPose;
+            OnPoseUpdated?.Invoke(flippedPose);
 
             m_interactiveCube.transform.position = worldPos;
             m_interactiveCube.transform.rotation = worldRot;

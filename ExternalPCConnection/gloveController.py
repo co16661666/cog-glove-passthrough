@@ -55,6 +55,8 @@ class MainWindow(QMainWindow):
         self.error_count = 0
         self.last_ff_time = 0
         self.last_imu_time = 0
+        self.last_hp_time = 0
+        self.last_cube_time = 0
  
         self._setup_ui()
  
@@ -177,7 +179,31 @@ class MainWindow(QMainWindow):
             self.debug_tab.set_imu_status(False, "NO DATA")
  
         # --- Handle 3D Plot (drains its own queues internally) ---
-        self.hand_cube_tab.update_view()
+        # ----- Hand Points -----
+        hp_queue = self.dm.subscribers['gui_hp']
+        latest_hands = None
+        while not hp_queue.empty():
+            _, hands = hp_queue.get()
+            latest_hands = hands
+            self.last_hp_time = curr_time
+            self.debug_tab.set_hp_status(True)
+
+        if curr_time - self.last_hp_time > 2.0:
+            self.debug_tab.set_hp_status(False, "NO DATA")
+
+        # ----- Cube Points -----
+        cube_queue = self.dm.subscribers['gui_cube']
+        latest_cube = None
+        while not cube_queue.empty():
+            _, cube = cube_queue.get()  # (timestamp, [tx,ty,tz,rx,ry,rz])
+            latest_cube = cube
+            self.last_cube_time = curr_time
+            self.debug_tab.set_cube_status(True)
+
+        if curr_time - self.last_cube_time > 2.0:
+            self.debug_tab.set_cube_status(False, "NO DATA")
+
+        self.hand_cube_tab.update_view(latest_hands, latest_cube)
 
         # --- Handle Grasped ---
         grasp_queue = self.dm.subscribers['gui_grasp']

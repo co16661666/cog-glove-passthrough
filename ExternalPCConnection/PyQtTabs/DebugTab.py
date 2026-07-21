@@ -22,8 +22,12 @@ class DebugTab(QWidget):
         status_layout = QHBoxLayout()
         self.ind_imu = self._create_indicator("IMU")
         self.ind_ff = self._create_indicator("Force/Flex")
+        self.ind_hp = self._create_indicator("Hand Points")
+        self.ind_cube = self._create_indicator("Cube Points")
         status_layout.addWidget(self.ind_imu)
         status_layout.addWidget(self.ind_ff)
+        status_layout.addWidget(self.ind_hp)
+        status_layout.addWidget(self.ind_cube)
         status_group.setLayout(status_layout)
         layout.addWidget(status_group)
 
@@ -83,6 +87,12 @@ class DebugTab(QWidget):
 
     def set_imu_status(self, active, reason=""):
         self._set_indicator(self.ind_imu, active, reason)
+
+    def set_hp_status(self, active, reason=""):
+        self._set_indicator(self.ind_hp, active, reason)
+
+    def set_cube_status(self, active, reason=""):
+        self._set_indicator(self.ind_cube, active, reason)
 
     def set_calibration(self, sys_c, gyro_c, accel_c, mag_c):
         self.lbl_cal_sys.setText(f"Sys: {sys_c}")
