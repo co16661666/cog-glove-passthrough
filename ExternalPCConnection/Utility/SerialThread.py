@@ -2,14 +2,6 @@ import serial
 import threading
 import struct
 import time
-from enum import Enum
-
-class Finger(Enum):
-    THUMB = 0
-    INDEX = 1
-    MIDDLE = 2
-    RING = 3
-    PINKY = 4
 
 # --- Constants & Formats ---
 # Packet Constants
@@ -124,10 +116,10 @@ class SerialThread(threading.Thread):
             cmd_name = {CMD_RETURN: 'CMD_RETURN', CMD_DEBUG: "DEBUG", CMD_CALIB: "CALIB", CMD_STREAM: "STREAM"}.get(cmd, "UNKNOWN")
             self.dm.log_event(f"Sent Command: {cmd_name}")
 
-    def handle_grasped(self, active_motors, intensities):
+    def handle_grasped(self, active_motors, patterns):
         for finger, is_enabled in active_motors.items():
             if is_enabled:
-                self.send_command(struct.pack(FMT_HAPTIC, Finger[finger].value, intensities[finger])) # driver, command
+                self.send_command(struct.pack(FMT_HAPTIC, finger.value, patterns[finger])) # driver, command
 
     def stop(self):
         self.running = False

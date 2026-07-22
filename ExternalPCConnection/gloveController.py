@@ -102,7 +102,7 @@ class MainWindow(QMainWindow):
         self.force_tab = ForceTab(self.thresholds)
         self.imu_tab = ImuTab()
         self.hand_cube_tab = HandCubeTab(self.dm, self.thresholds)
-        self.motor_tab = MotorTab(self.dm)
+        self.motor_tab = MotorTab(self.dm, test_callback=self._run_manual_motor_test)
         self.debug_tab = DebugTab()
  
         self.tabs.addTab(self.flex_tab, "Flex Graphs")
@@ -215,8 +215,16 @@ class MainWindow(QMainWindow):
 
         if grasp_updates > 0:
             if (latest_grasp_data == 'GRASPED'):   
-                self.serial_thread.handle_grasped(self.motor_tab.get_enabled_motors(), self.motor_tab.get_intensities())
- 
+                self.serial_thread.handle_grasped(self.motor_tab.get_enabled_motors(), self.motor_tab.get_patterns())
+
+    def _run_manual_motor_test(self, active_motors, patterns, duration_ms):
+        self.dm.log_event(f"Manual motor test triggered for {duration_ms} ms")
+        self.serial_thread.handle_grasped(active_motors, patterns)
+        
+        # Turn off motors after duration
+        off_motors = {f: False for f in active_motors}
+        QTimer.singleShot(duration_ms, lambda: self.serial_thread.handle_grasped(off_motors, patterns))
+
     def closeEvent(self, event):  # type: ignore
         self.dm.log_event("Closing application, cleaning up threads...")
         self.serial_thread.stop()

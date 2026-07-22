@@ -1,25 +1,24 @@
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QCheckBox, QSpinBox, QFrame
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QCheckBox, QSpinBox, QFrame, QPushButton
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 
 class MotorTab(QWidget):
-    """Per-finger vibration motor controls: on/off toggle, intensity field,
+    """Per-finger vibration motor controls: on/off toggle, pattern field,
     and a live activity indicator that reflects whether each motor is
     currently vibrating."""
-
-    FINGERS = ["Thumb", "Index", "Middle", "Ring", "Pinky"]
 
     MIN_INTENSITY = 1
     MAX_INTENSITY = 123
 
-    def __init__(self, data_manager, parent=None):
+    def __init__(self, data_manager, test_callback=None, parent=None):
         super().__init__(parent)
         self.dm = data_manager
+        self.test_callback = test_callback
 
         # Per-finger widget references, keyed by finger name.
         self._toggles: dict[str, QCheckBox] = {}
-        self._intensity_fields: dict[str, QSpinBox] = {}
+        self._pattern_fields: dict[str, QSpinBox] = {}
         self._activity_labels: dict[str, QLabel] = {}
 
         self._build_ui()
@@ -29,32 +28,45 @@ class MotorTab(QWidget):
     # ------------------------------------------------------------------ #
     def _build_ui(self):
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Vibration Motor Control"))
 
-        for finger in self.FINGERS:
+        header_layout = QHBoxLayout()
+        header_layout.addWidget(QLabel("Vibration Motor Control"))
+        btn_test_all = QPushButton("Test All Enabled (1s)")
+        btn_test_all.clicked.connect(self._on_test_all_clicked)
+        header_layout.addWidget(btn_test_all)
+        header_layout.addStretch()
+        layout.addLayout(header_layout)
+
+        for finger in self.dm.Finger:
             row = QFrame()
             h_layout = QHBoxLayout(row)
             h_layout.setContentsMargins(0, 0, 0, 0)
 
-            # Finger name
-            name_label = QLabel(finger)
+            # Finger name label
+            name_label = QLabel(finger.name.capitalize())
             name_label.setFixedWidth(60)
             h_layout.addWidget(name_label)
 
             # On/off toggle
             toggle = QCheckBox("Enabled")
+            toggle.setChecked(True)
             toggle.stateChanged.connect(lambda state, f=finger: self._on_toggle_changed(f, state))
             self._toggles[finger] = toggle
             h_layout.addWidget(toggle)
 
-            # Intensity number field (1-123)
+            # Intensity field
             h_layout.addWidget(QLabel("Intensity:"))
             spin = QSpinBox()
             spin.setRange(self.MIN_INTENSITY, self.MAX_INTENSITY)
             spin.setValue(self.MIN_INTENSITY)
-            spin.valueChanged.connect(lambda val, f=finger: self._on_intensity_changed(f, val))
-            self._intensity_fields[finger] = spin
+            spin.valueChanged.connect(lambda val, f=finger: self._on_pattern_changed(f, val))
+            self._pattern_fields[finger] = spin
             h_layout.addWidget(spin)
+
+            # Test button
+            btn_test = QPushButton("Test")
+            btn_test.clicked.connect(lambda _, f=finger: self._on_test_single_clicked(f))
+            h_layout.addWidget(btn_test)
 
             # Activity indicator
             activity_label = QLabel("Inactive")
@@ -69,17 +81,31 @@ class MotorTab(QWidget):
         layout.addStretch()
 
     # ------------------------------------------------------------------ #
+    # Motor test handlers
+    # ------------------------------------------------------------------ #
+    def _on_test_single_clicked(self, finger):
+        if self.test_callback:
+            self._trigger_test({f: (f == finger) for f in self.dm.Finger}, 500)
+
+    def _on_test_all_clicked(self):
+        if self.test_callback:
+            self._trigger_test(self.get_enabled_motors(), 1000)
+
+    def _trigger_test(self, targets: dict[str, bool], duration_ms: int):
+        self.update_activity(targets)
+        if self.test_callback is not None:
+            self.test_callback(targets, self.get_patterns(), duration_ms)
+            QTimer.singleShot(duration_ms, lambda: self.update_activity({f: False for f, active in targets.items() if active}))
+
+    # ------------------------------------------------------------------ #
     # Internal signal handlers
     # ------------------------------------------------------------------ #
-    def _on_toggle_changed(self, finger: str, state: int):
+    def _on_toggle_changed(self, finger, state: int):
         enabled = state == Qt.CheckState.Checked.value
-        self.dm.log_event(f"Motor {finger} toggled -> {'ON' if enabled else 'OFF'}")
-        # This toggle is only a master switch; it does not drive the
-        # activity indicator. Whatever process is actually firing the
-        # motors should call update_activity() to reflect real state.
+        self.dm.log_event(f"Motor {finger.name} toggled -> {'ON' if enabled else 'OFF'}")
 
-    def _on_intensity_changed(self, finger: str, value: int):
-        self.dm.log_event(f"Motor {finger} intensity -> {value}")
+    def _on_pattern_changed(self, finger, value: int):
+        self.dm.log_event(f"Motor {finger.name} pattern -> {value}")
 
     # ------------------------------------------------------------------ #
     # Public API
@@ -104,13 +130,13 @@ class MotorTab(QWidget):
                 label.setText("Inactive")
                 label.setStyleSheet("color: gray;")
 
-    def get_intensities(self) -> dict[str, int]:
-        """Return the current intensity value (1-123) for each finger."""
-        return {finger: spin.value() for finger, spin in self._intensity_fields.items()}
+    def get_patterns(self) -> dict[str, int]:
+        """Return the current pattern value (1-123) for each finger."""
+        return {finger: spin.value() for finger, spin in self._pattern_fields.items()}
 
-    def get_intensity(self, finger: str) -> int:
-        """Return the current intensity value (1-123) for a single finger."""
-        return self._intensity_fields[finger].value()
+    def get_pattern(self, finger: str) -> int:
+        """Return the current pattern value (1-123) for a single finger."""
+        return self._pattern_fields[finger].value()
 
     def get_enabled_motors(self) -> dict[str, bool]:
         """Return the current on/off toggle state for each finger."""
