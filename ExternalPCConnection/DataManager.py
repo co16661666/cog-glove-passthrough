@@ -1,8 +1,16 @@
 import queue
 import time
+from enum import Enum
 
 # --- Data Management (Pub/Sub Queues) ---
 class DataManager:
+    class Finger(Enum):
+        THUMB = 0
+        INDEX = 1
+        MIDDLE = 2
+        RING = 3
+        PINKY = 4
+
     """Manages routing of parsed serial data to different consumers."""
     def __init__(self):
         self.subscribers = {
