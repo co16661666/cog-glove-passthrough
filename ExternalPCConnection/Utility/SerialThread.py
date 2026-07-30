@@ -10,6 +10,15 @@ END_BIT = 0x55
 PACKET_IMU = 0
 PACKET_FF = 1
 PACKET_CALIB = 2
+PACKET_HAPTIC = 3
+PACKET_ERR = 4
+
+# Glove Error Codes
+IMU_SETUP_ERROR = 0      # BNO055 setup error
+HAPTIC_SETUP_ERROR = 1   # DRV2605 setup error
+MUX_SETUP_ERROR = 2      # I2C mux setup error
+MUX_CHANNEL_ERROR = 3    # Error switching channels between controllers (https://docs.arduino.cc/language-reference/en/functions/communication/wire/endTransmission/by)
+HAPTIC_RUNTIME_ERROR = 4 # Error with haptics or haptic triggers
 
 # Commands to send to Teensy
 # RETURN = 0,
@@ -21,6 +30,7 @@ CMD_RETURN = b'\x00'
 CMD_DEBUG = b'\x01'
 CMD_CALIB = b'\x02'
 CMD_STREAM = b'\x03'
+CMD_HAPTIC = b'\x04'
 
 # Struct formats based on __attribute__((__packed__)) C++ structs
 # IMU: 4 floats (quat), 3 floats (accel) -> 28 bytes
@@ -29,8 +39,10 @@ FMT_IMU = '<7f'
 FMT_FF = '<10H'  
 # CALIB: 4 uint8 -> 4 bytes
 FMT_CALIB = '<4B'
-# HAPTIC: 4 uint8 -> 4 bytes
+# HAPTIC: 2 uint8 -> 2 bytes
 FMT_HAPTIC = '<2B'
+# ERROR: 2 uint8 -> 2 bytes
+FMT_ERROR = '<2B'
 
 # --- Serial Reader Thread ---
 class SerialThread(threading.Thread):
@@ -65,7 +77,7 @@ class SerialThread(threading.Thread):
                     
                     elif state == "READ_TYPE":
                         packet_type = self.ser.read(1)[0]
-                        if packet_type in [PACKET_IMU, PACKET_FF, PACKET_CALIB]:
+                        if packet_type in [PACKET_IMU, PACKET_FF, PACKET_CALIB, PACKET_HAPTIC, PACKET_ERR]:
                             state = "READ_PAYLOAD"
                         else:
                             self.dm.log_event(f"Unknown packet type: {packet_type}", is_error=True)
@@ -95,7 +107,23 @@ class SerialThread(threading.Thread):
                                 self.dm.broadcast_calib((time.time(), *data))
                             else:
                                 self.dm.log_event("CALIB payload incomplete.", is_error=True)
-                        
+
+                        elif packet_type == PACKET_HAPTIC:
+                            payload = self.ser.read(2)
+                            if len(payload) == 2:
+                                data = struct.unpack(FMT_HAPTIC, payload)
+                                self.dm.log_event(f"Haptic trigger successful on motor {data[0]} with effect {data[1]}.", is_error=False)
+                            else:
+                                self.dm.log_event("Haptic payload incomplete.", is_error=True)
+
+                        elif packet_type == PACKET_ERR:
+                            payload = self.ser.read(2)
+                            if len(payload) == 2:
+                                data = struct.unpack(FMT_ERROR, payload)
+                                self.handle_glove_error(data[0], data[1])
+                            else:
+                                self.dm.log_event("Error payload incomplete.", is_error=True)
+
                         state = "WAIT_END"
 
                     elif state == "WAIT_END":
@@ -113,13 +141,32 @@ class SerialThread(threading.Thread):
     def send_command(self, cmd):
         if self.ser and self.ser.is_open:
             self.ser.write(cmd)
-            cmd_name = {CMD_RETURN: 'CMD_RETURN', CMD_DEBUG: "DEBUG", CMD_CALIB: "CALIB", CMD_STREAM: "STREAM"}.get(cmd, "UNKNOWN")
+            cmd_name = {CMD_RETURN: 'CMD_RETURN', CMD_DEBUG: "DEBUG", CMD_CALIB: "CALIB", CMD_STREAM: "STREAM", CMD_HAPTIC: "HAPTIC"}.get(cmd, "UNKNOWN")
             self.dm.log_event(f"Sent Command: {cmd_name}")
 
     def handle_grasped(self, active_motors, patterns):
         for finger, is_enabled in active_motors.items():
             if is_enabled:
-                self.send_command(struct.pack(FMT_HAPTIC, finger.value, patterns[finger])) # driver, command
+                self.send_command(CMD_HAPTIC)
+                if self.ser and self.ser.is_open:
+                    self.ser.write(struct.pack(FMT_HAPTIC, finger.value, patterns[finger])) # driver, command
+
+    def handle_glove_error(self, source, err):
+        if (source == IMU_SETUP_ERROR):
+            self.dm.log_event(f"[Glove] Error: IMU setup failed", is_error=True)
+        elif (source == HAPTIC_SETUP_ERROR):
+            self.dm.log_event(f"[Glove] Error: Haptic motor setup failed on channel: {err}", is_error=True)
+        elif (source == MUX_SETUP_ERROR):
+            self.dm.log_event(f"[Glove] Error: Multiplexer not detected", is_error=True)
+        elif (source == MUX_CHANNEL_ERROR):
+            self.dm.log_event(f"[Glove] Error: Multiplexer channel select failed with error: {err}", is_error=True)
+        elif (source == HAPTIC_RUNTIME_ERROR):
+            if err == 0:
+                self.dm.log_event("[Glove] Error: Invalid motor driver index", is_error=True)
+            elif err == 1:
+                self.dm.log_event("[Glove] Error: Haptic motor signal packet timed out", is_error=True)
+        else:
+            self.dm.log_event(f"[Glove] Error: Unknown error source {source}, code: {err}", is_error=True)
 
     def stop(self):
         self.running = False

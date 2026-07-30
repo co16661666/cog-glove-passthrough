@@ -22,7 +22,7 @@ class DataManager:
             'gui_hp': queue.Queue(), # hand points
             'gui_cube': queue.Queue(),
 
-            # Debug log
+            # Data logging
             'log_imu': queue.Queue(),
             'log_ff': queue.Queue(),
             'log_cube': queue.Queue(),
