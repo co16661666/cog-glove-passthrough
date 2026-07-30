@@ -4,8 +4,8 @@
 #include <Eigen/Dense>
 #include <optional>
 
-static constexpr float R_SCALE_TRANS = 1.0f;
-static constexpr float R_SCALE_ROT   = 1.0f;
+static constexpr float R_SCALE_TRANS = 0.5f;
+static constexpr float R_SCALE_ROT   = 0.5f;
 
 constexpr int MakeKey(int faceCount, int numPoints)
 {
