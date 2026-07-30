@@ -7,7 +7,8 @@
 
 #include <cv_pose_estimation/MarkerDetector.hpp>
 #include <cv_pose_estimation/PoseSolver.hpp>
-#include <cv_pose_estimation/CubePoints.hpp>
+// #include <cv_pose_estimation/CubePoints.hpp>
+#include <cv_pose_estimation/DumbellPoints.hpp>
 
 #include <esekf/OpenCVKF.hpp>
 #include <esekf/RCalibration.hpp>
@@ -160,6 +161,8 @@ extern "C" {
             }
             
             // Return current filtered state
+            // Eigen::Vector3f tvec = kf->getTvec();
+            // Eigen::Vector3f rvec = kf->getRvec();
             Eigen::Vector3f tvec = kf->getTvec();
             Eigen::Vector3f rvec = kf->getRvec();
             out_pose->tx = tvec(0);
@@ -349,9 +352,9 @@ extern "C" {
         // Q.block<3, 3>(0, 0) = Eigen::Matrix3f::Identity() * 1E-1f;
         // Q.block<3, 3>(3, 3) = Eigen::Matrix3f::Identity() * 8E-2f;
         Q.block<3, 3>(0, 0) = Eigen::Matrix3f::Identity() * 1E-1f; // TODO: attempt to tighten Q
-        Q.block<3, 3>(3, 3) = Eigen::Matrix3f::Identity() * 16E-4f;
+        Q.block<3, 3>(3, 3) = Eigen::Matrix3f::Identity() * 16E-2f;
         Eigen::Matrix<float, 6, 6> R = Eigen::Matrix<float, 6, 6>::Identity() * 0.1f;
-        R.block<3, 3>(0, 0) = Eigen::Vector3f(5E-4,   2E-4,   3E-4).asDiagonal(); // TODO: Tighten value, such a low R could lead to drifting
+        R.block<3, 3>(0, 0) = Eigen::Vector3f(5E-6,   2E-6,   3E-6).asDiagonal(); // TODO: Tighten value, such a low R could lead to drifting
         R.block<3, 3>(3, 3) = Eigen::Vector3f(6e-3,   1.2e-2,  1.2e-2).asDiagonal();
 
         kf = new OpenCVKF(x_k, dx_k, P_k, Q, R);
